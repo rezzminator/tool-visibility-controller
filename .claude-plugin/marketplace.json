@@ -15,7 +15,7 @@
         "ref": "main"
       },
       "description": "Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "license": "MIT",
       "keywords": [
         "claude-code",

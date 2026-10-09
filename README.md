@@ -7,7 +7,7 @@
 **Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop**
 
 [![CI](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://code.claude.com/docs/en/plugins)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)

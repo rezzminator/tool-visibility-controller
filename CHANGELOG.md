@@ -4,7 +4,7 @@ Every release of tool-visibility-controller. Versions follow [semantic versionin
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-10-09
+## [0.2.0] — 2026-10-09
 
 ### Added
 - A `visibility` field in agent, skill and command frontmatter: `visible-to` (who may see and invoke the item) and, in agent files, `agents`, `skills`, `mcp` and `tools` blocks (what that agent's loop sees), each with optional `include` and `exclude` lists of names or `*` globs; `main` is the main chat.

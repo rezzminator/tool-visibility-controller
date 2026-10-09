@@ -1,6 +1,6 @@
 {
   "name": "tool-visibility-controller",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop",
   "license": "MIT",
   "author": {
