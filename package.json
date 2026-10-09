@@ -2,7 +2,7 @@
   "name": "agent-scope",
   "version": "0.1.0",
   "private": true,
-  "description": "Scope Claude Code sub-agents to their parents: available-to: [parent] in an agent's frontmatter hides it from every other loop's agent listing and refuses every other dispatch.",
+  "description": "Claude Code plugin for parent-scoped subagents — hide a helper from every other agent listing and refuse its dispatch",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -22,14 +22,19 @@
   "keywords": [
     "claude-code",
     "claude-code-plugin",
-    "sub-agent",
+    "subagents",
+    "claude-code-subagents",
     "subagent",
+    "sub-agent",
+    "claude-code-hooks",
+    "function-hooks",
+    "agent-orchestration",
+    "multi-agent",
+    "access-control",
     "agent-scope",
     "agent-listing",
-    "agent-permissions",
-    "function-hooks",
-    "claude-mods",
-    "multi-agent",
-    "orchestration"
+    "context-engineering",
+    "claude-code-mods",
+    "claude-mods"
   ]
 }
