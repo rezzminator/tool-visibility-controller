@@ -2,6 +2,11 @@ name: ci
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: Also run the release check against main's version
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [develop, main]
@@ -29,7 +34,7 @@ jobs:
 
   release:
     name: release
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'workflow_dispatch' && inputs.release)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
