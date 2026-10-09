@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: A scoped agent still shows or spawns where it should not, is hidden or refused where it should not be, or a gate fails
+about: An agent, skill or tool still shows or runs where it should not, is hidden or refused where it should not be, or a gate fails
 title: ''
 labels: bug
 assignees: ''
@@ -8,33 +8,33 @@ assignees: ''
 
 **What happened**
 
-<!-- e.g. "the main chat still lists sub-tracer" or "tracer's spawn of sub-tracer was refused" -->
+<!-- e.g. "the main chat still lists sub-tracer" or "rr's call of mcp__professor__harvester_read was refused" -->
 
 **What you expected**
 
-**The agent definition**
+**The rule**
 
 ```markdown
 ---
 name:
-available-to:
+visibility:
 ---
 ```
 
-<!-- Its frontmatter, and where the file lives: ~/.claude/agents/, $CLAUDE_CONFIG_DIR/agents or a project's .claude/agents/. -->
+<!-- The frontmatter or the tool-visibility-controller.json content, and where the file lives: ~/.claude/, $CLAUDE_CONFIG_DIR or a project's .claude/. -->
 
-**Who dispatched it**
+**Which loop**
 
-<!-- The main chat, or a sub-agent of which type. -->
+<!-- The main chat, or a sub-agent of which type, and the item it saw or called. -->
 
 **Environment**
 
 - Claude Code version (`claude --version`):
-- agent-scope version (see `/plugin`, or the plugin's `plugin.json`):
+- tool-visibility-controller version (see `/plugin`, or the plugin's `plugin.json`):
 - OS:
 - `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` set before Claude Code started: yes / no
-- Started a new session after editing `available-to`: yes / no
+- Started a new session after editing the rule: yes / no
 
 **Log lines**
 
-<!-- Any line starting with `agent-scope:`. Leave out paths or names you would rather keep private. -->
+<!-- Any line starting with `tool-visibility-controller:`. Leave out paths or names you would rather keep private. -->

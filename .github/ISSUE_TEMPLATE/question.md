@@ -1,6 +1,6 @@
 ---
 name: Question
-about: Ask how agent-scope works or how to scope an agent
+about: Ask how tool-visibility-controller works or how to write a visibility rule
 title: ''
 labels: question
 assignees: ''
@@ -8,7 +8,7 @@ assignees: ''
 
 **Your question**
 
-<!-- e.g. "Can a project copy of an agent unscope it for one repository?" -->
+<!-- e.g. "Can a project scope file let one agent use an MCP server the user file hides from every loop?" -->
 
 **What you tried**
 
@@ -17,4 +17,4 @@ assignees: ''
 **Environment, if it matters**
 
 - Claude Code version (`claude --version`):
-- agent-scope version (see `/plugin`):
+- tool-visibility-controller version (see `/plugin`):

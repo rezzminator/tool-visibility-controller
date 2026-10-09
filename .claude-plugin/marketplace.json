@@ -1,39 +1,40 @@
 {
-  "name": "agent-scope",
-  "description": "Parent-scoped sub-agents for Claude Code.",
+  "name": "tool-visibility-controller",
+  "description": "Per-loop tool visibility for Claude Code: agents, skills, MCP tools and built-in tools.",
   "owner": {
     "name": "rezzminator",
     "url": "https://github.com/rezzminator"
   },
   "plugins": [
     {
-      "name": "agent-scope",
+      "name": "tool-visibility-controller",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/rezzminator/agent-scope.git",
-        "path": "plugins/agent-scope",
+        "url": "https://github.com/rezzminator/tool-visibility-controller.git",
+        "path": "plugins/tool-visibility-controller",
         "ref": "main"
       },
-      "description": "Claude Code plugin for parent-scoped subagents — hide a helper from every other agent listing and refuse its dispatch",
-      "version": "0.1.0",
+      "description": "Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop",
+      "version": "0.2.0",
       "license": "MIT",
       "keywords": [
         "claude-code",
         "claude-code-plugin",
-        "subagents",
-        "claude-code-subagents",
-        "subagent",
-        "sub-agent",
         "claude-code-hooks",
         "function-hooks",
+        "subagents",
+        "claude-code-subagents",
+        "mcp",
+        "mcp-tools",
+        "claude-skills",
+        "tool-permissions",
+        "access-control",
         "agent-orchestration",
         "multi-agent",
-        "access-control",
-        "agent-scope",
-        "agent-listing",
         "context-engineering",
+        "token-optimization",
         "claude-code-mods",
-        "claude-mods",
+        "tool-visibility-controller",
         "professor"
       ],
       "author": {

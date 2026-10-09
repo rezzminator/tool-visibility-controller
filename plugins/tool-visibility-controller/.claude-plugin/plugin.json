@@ -1,24 +1,14 @@
 {
   "name": "tool-visibility-controller",
   "version": "0.2.0",
-  "private": true,
   "description": "Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop",
-  "type": "module",
   "license": "MIT",
-  "engines": {
-    "node": ">=18"
+  "author": {
+    "name": "Reza · Professor",
+    "url": "https://github.com/rezzminator/professor"
   },
-  "scripts": {
-    "test": "vitest run --dir tests",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
-    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/tool-visibility-controller",
-    "release:check": "scripts/release-check.sh"
-  },
-  "devDependencies": {
-    "@types/node": "^22.10.2",
-    "typescript": "^5.7.2",
-    "vitest": "^3.2.4"
-  },
+  "repository": "https://github.com/rezzminator/tool-visibility-controller",
+  "homepage": "https://github.com/rezzminator/tool-visibility-controller",
   "keywords": [
     "claude-code",
     "claude-code-plugin",
@@ -36,6 +26,7 @@
     "context-engineering",
     "token-optimization",
     "claude-code-mods",
-    "tool-visibility-controller"
+    "tool-visibility-controller",
+    "professor"
   ]
 }
