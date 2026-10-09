@@ -1,0 +1,30 @@
+name: release
+
+on:
+  push:
+    tags: ['agent-scope--v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: The tag sits on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: The tag matches the manifest and CHANGELOG
+        run: |
+          v="${GITHUB_REF_NAME#agent-scope--v}"
+          manifest_v="$(node -p 'require("./plugins/agent-scope/.claude-plugin/plugin.json").version')"
+          [ "$v" = "$manifest_v" ] || { echo "::error::tag $GITHUB_REF_NAME (version $v) does not match plugins/agent-scope/.claude-plugin/plugin.json's version $manifest_v at the tagged commit"; exit 1; }
+          scripts/release-check.sh
+          v_re=$(printf '%s' "$v" | sed 's/[.]/[.]/g')
+          awk -v v="$v_re" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ || /^\[/ {f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md
+      - run: gh release create "$GITHUB_REF_NAME" --title "agent-scope ${GITHUB_REF_NAME#agent-scope--v}" --notes-file notes.md --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

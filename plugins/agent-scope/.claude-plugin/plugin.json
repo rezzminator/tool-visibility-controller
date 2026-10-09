@@ -1,0 +1,26 @@
+{
+  "name": "agent-scope",
+  "version": "0.1.0",
+  "description": "Scope Claude Code sub-agents to their parents: available-to: [parent] in an agent's frontmatter hides it from every other loop's agent listing and refuses every other dispatch.",
+  "license": "MIT",
+  "author": {
+    "name": "Reza · Professor",
+    "url": "https://github.com/rezzminator/professor"
+  },
+  "repository": "https://github.com/rezzminator/agent-scope",
+  "homepage": "https://github.com/rezzminator/agent-scope",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "sub-agent",
+    "subagent",
+    "agent-scope",
+    "agent-listing",
+    "agent-permissions",
+    "function-hooks",
+    "claude-mods",
+    "multi-agent",
+    "orchestration",
+    "professor"
+  ]
+}

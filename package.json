@@ -1,0 +1,35 @@
+{
+  "name": "agent-scope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scope Claude Code sub-agents to their parents: available-to: [parent] in an agent's frontmatter hides it from every other loop's agent listing and refuses every other dispatch.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "vitest run --dir tests",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
+    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/agent-scope",
+    "release:check": "scripts/release-check.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "sub-agent",
+    "subagent",
+    "agent-scope",
+    "agent-listing",
+    "agent-permissions",
+    "function-hooks",
+    "claude-mods",
+    "multi-agent",
+    "orchestration"
+  ]
+}

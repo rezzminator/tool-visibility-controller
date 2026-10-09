@@ -1,0 +1,40 @@
+{
+  "name": "agent-scope",
+  "description": "Parent-scoped sub-agents for Claude Code.",
+  "owner": {
+    "name": "rezzminator",
+    "url": "https://github.com/rezzminator"
+  },
+  "plugins": [
+    {
+      "name": "agent-scope",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/rezzminator/agent-scope.git",
+        "path": "plugins/agent-scope",
+        "ref": "main"
+      },
+      "description": "Scope Claude Code sub-agents to their parents: available-to: [parent] in an agent's frontmatter hides it from every other loop's agent listing and refuses every other dispatch.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "keywords": [
+        "claude-code",
+        "claude-code-plugin",
+        "sub-agent",
+        "subagent",
+        "agent-scope",
+        "agent-listing",
+        "agent-permissions",
+        "function-hooks",
+        "claude-mods",
+        "multi-agent",
+        "orchestration",
+        "professor"
+      ],
+      "author": {
+        "name": "Reza · Professor",
+        "url": "https://github.com/rezzminator/professor"
+      }
+    }
+  ]
+}

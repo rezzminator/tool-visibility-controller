@@ -1,0 +1,6 @@
+node_modules
+*.log
+.DS_Store
+.worktrees/
+plugins/agent-scope/tsconfig.json
+plugins/agent-scope/.claude-plugin/types/
