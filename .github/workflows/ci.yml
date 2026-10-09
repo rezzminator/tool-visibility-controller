@@ -37,7 +37,7 @@ jobs:
       - name: Read main's manifest
         run: |
           set -euo pipefail
-          f=plugins/agent-scope/.claude-plugin/plugin.json
+          f=plugins/tool-visibility-controller/.claude-plugin/plugin.json
           git rev-parse --verify -q origin/main >/dev/null || { echo "origin/main is missing from the checkout"; exit 1; }
           if git cat-file -e "origin/main:$f"; then
             git show "origin/main:$f" > /tmp/main-plugin.json

@@ -2,5 +2,5 @@ node_modules
 *.log
 .DS_Store
 .worktrees/
-plugins/agent-scope/tsconfig.json
-plugins/agent-scope/.claude-plugin/types/
+plugins/tool-visibility-controller/tsconfig.json
+plugins/tool-visibility-controller/.claude-plugin/types/

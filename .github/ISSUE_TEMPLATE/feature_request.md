@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: An idea for agent-scope, a new scoping rule or option
+about: An idea for tool-visibility-controller, a new visibility rule or option
 title: ''
 labels: enhancement
 assignees: ''
@@ -8,12 +8,12 @@ assignees: ''
 
 **What you would like**
 
-<!-- e.g. "scope an agent to every sub-agent but not the main chat" -->
+<!-- e.g. "hide an MCP server's resources from a loop, not only its tools" -->
 
 **Why it helps you**
 
-<!-- The orchestrator and helper agents you run, and what goes wrong today. -->
+<!-- The agents, skills and tools you run, and what goes wrong today. -->
 
 **How it could look**
 
-<!-- The frontmatter you would write, and what each loop would see. -->
+<!-- The frontmatter or scope file you would write, and what each loop would see. -->

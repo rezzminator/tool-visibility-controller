@@ -21,7 +21,7 @@
     }
   },
   "include": [
-    "plugins/agent-scope/src",
+    "plugins/tool-visibility-controller/src",
     "tests"
   ]
 }

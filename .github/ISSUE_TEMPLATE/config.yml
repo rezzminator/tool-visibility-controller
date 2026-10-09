@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
-  - name: A scoped agent still shows up
-    url: https://github.com/rezzminator/agent-scope/blob/develop/SUPPORT.md
-    about: Function hooks off, no new session after an edit, a nearer project copy, a plugin or built-in agent; SUPPORT.md covers each.
+  - name: Something still shows up or is never refused
+    url: https://github.com/rezzminator/tool-visibility-controller/blob/develop/SUPPORT.md
+    about: Function hooks off, no new session after an edit, a nearer project copy, a malformed block, a tool listed in the prompt; SUPPORT.md covers each.
   - name: A security problem
-    url: https://github.com/rezzminator/agent-scope/security/advisories/new
+    url: https://github.com/rezzminator/tool-visibility-controller/security/advisories/new
     about: Report it privately, never in a public issue (see SECURITY.md).

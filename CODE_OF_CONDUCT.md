@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at a [GitHub issue](https://github.com/rezzminator/agent-scope/issues/new/choose) in this repository (for a report you would rather not make in public, open an issue asking to be contacted privately and leave the details out). All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at a [GitHub issue](https://github.com/rezzminator/tool-visibility-controller/issues/new/choose) in this repository (for a report you would rather not make in public, open an issue asking to be contacted privately and leave the details out). All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

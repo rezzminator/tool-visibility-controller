@@ -6,11 +6,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 read_json() { node -e 'const [f, e] = process.argv.slice(1); const j = JSON.parse(require("fs").readFileSync(f, "utf8")); process.stdout.write(String(e.split(".").reduce((o, k) => o?.[k], j) ?? ""))' "$1" "$2" || { echo "ERROR cannot read $1" >&2; return 1; }; }
-v=$(read_json plugins/agent-scope/.claude-plugin/plugin.json version) || exit 2
+v=$(read_json plugins/tool-visibility-controller/.claude-plugin/plugin.json version) || exit 2
 [ -n "$v" ] || { echo "ERROR plugin.json has no version"; exit 2; }
 v_re=$(printf '%s' "$v" | sed 's/\./\\./g')
 fail=0
-m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "agent-scope")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
+m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "tool-visibility-controller")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
 p=$(read_json package.json version) || exit 2
 l=$(read_json package-lock.json version) || exit 2
 lr=$(read_json package-lock.json packages..version) || exit 2

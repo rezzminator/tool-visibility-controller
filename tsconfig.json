@@ -16,5 +16,5 @@
       "claude-code": ["./types/claude-code.d.ts"]
     }
   },
-  "include": ["plugins/agent-scope/hooks", "plugins/agent-scope/src", "types"]
+  "include": ["plugins/tool-visibility-controller/hooks", "plugins/tool-visibility-controller/src", "types"]
 }
