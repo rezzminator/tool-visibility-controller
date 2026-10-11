@@ -168,12 +168,13 @@ flowchart LR
 
 | Hook | What it does |
 | --- | --- |
-| `prompt.attachment` | Per loop, removes the entries that loop may not see from the agent listing (`agent_listing_delta`), the skill listing (`skill_listing`) and the deferred-tools notice (`deferred_tools_delta`), and drops an MCP server's block from `mcp_instructions_delta` when the loop may use none of that server's tools. The loop is the main chat, or a sub-agent whose type comes from its id in the session's agent list. Every other byte stays as it was. |
+| `prompt.attachment` | Per loop, removes the entries that loop may not see from the agent listing (`agent_listing_delta`), the skill listing (`skill_listing`) and the deferred-tools notice (`deferred_tools_delta`), and drops an MCP server's block from `mcp_instructions_delta` when the loop may use none of that server's tools. The loop is the main chat, or a sub-agent whose type comes from its id: found in the session's agent list, else announced by `SubagentStart` or `SubagentStop`. Every other byte stays as it was. |
 | `agent.spawn` | Refuses the spawn of an agent type the calling loop may not use. |
 | `tool.call` | Refuses a built-in tool, an MCP tool, or a `Skill` call naming a skill or command the calling loop may not use. |
+| `classic.SubagentStart`, `classic.SubagentStop` | Learn each sub-agent's type by its id, for an id the session's agent list does not name: a workflow's agents are never in it, so these two announcements are their only source. A teammate's announcement carries its name, so the list's type wins for any id it names. |
 | `session.start` | Forgets the rules read for the previous session. |
 
-It fails open: an unreadable file, a loop id that names no agent, a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
 
 ## ⚠️ Limits
 
