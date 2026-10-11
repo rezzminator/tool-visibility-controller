@@ -78,6 +78,10 @@ function engine(files: Record<string, string>, options: Options = {}) {
     tool: (tool: string, input: Record<string, unknown> = {}, agentId?: string) =>
       call('tool.call', { tool, tool_use_id: 't1', ...input, agentId }, async () => RAN),
     startSession: () => call('session.start', {}, async () => ({})),
+    // The engine fires these whether or not the plugin hooks them.
+    announce: async (event: 'classic.SubagentStart' | 'classic.SubagentStop', id: string, type: string) => {
+      if (hooks.has(event)) await call(event, { agent_id: id, agent_type: type }, async () => ({}));
+    },
     caught: (name: string, e: unknown, next: Hook) => catches.get(name)!($, e, next),
   };
 }
@@ -95,6 +99,16 @@ suite('agents', () => {
     expect(await run.attach('agent_listing_delta', AGENTS)).toEqual({ text: WITHOUT_CHILD });
     expect(await run.attach('agent_listing_delta', AGENTS, 'gp1')).toEqual({ text: WITHOUT_CHILD });
     expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: AGENTS });
+  });
+
+  it('applies the policy to an agent only SubagentStart or SubagentStop names, as a workflow run or a resumed agent has', async () => {
+    const run = engine(SCOPED);
+    await run.announce('classic.SubagentStart', 'wf1', 'general-purpose');
+    await run.announce('classic.SubagentStop', 'wf2', 'scope-parent');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'wf1')).toEqual({ text: WITHOUT_CHILD });
+    expect((await run.spawn('scope-child', 'wf1')).deny).toContain('Agent type scope-child is not available to a general-purpose agent');
+    expect(await run.spawn('scope-child', 'wf2')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([]);
   });
 
   it('refuses a spawn from a loop it is not visible to, naming the rule, and lets the parent through', async () => {
@@ -294,6 +308,17 @@ suite('discovery and failure', () => {
     expect(await run.spawn('scope-child', 'ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
     expect(run.logs.join('\n')).toMatch(/ghost.*no agent type/);
+  });
+
+  it('logs a loop that resolves to no agent type once, whatever its listings, spawns and calls', async () => {
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
+    for (const type of ['deferred_tools_delta', 'skill_listing', 'agent_listing_delta', 'mcp_instructions_delta']) await run.attach(type, AGENTS, 'fork1');
+    await run.spawn('scope-child', 'fork1');
+    await run.tool('Bash', {}, 'fork1');
+    await run.tool('Bash', {}, 'fork1');
+    await run.attach('agent_listing_delta', AGENTS, 'fork2');
+    expect(run.logs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.logs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
   });
 
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {

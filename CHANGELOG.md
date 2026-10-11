@@ -4,6 +4,15 @@ Every release of tool-visibility-controller. Versions follow [semantic versionin
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-10-12
+
+### Fixed
+- A sub-agent that `$.agent.list()` does not carry, as a workflow run's agents never are, was treated as a loop with no type: its listings stayed whole and its spawns and calls went through every rule. The plugin now learns each sub-agent's type from `SubagentStart` and `SubagentStop` for an id the list does not name, so the policy applies to it; an id the list names keeps the list's type, since a teammate's announcement carries its name.
+- A loop that resolves to no agent type, such as the fork the engine runs for a compaction or for memory, was logged once per listing kind and once per spawn and tool call (four lines or more for one compaction). It is now logged once per loop id.
+
+### Changed
+- CI can be run by hand from the Actions tab (`workflow_dispatch`), with an option that also runs the release check against `main`'s version.
+
 ## [0.2.0] — 2026-10-09
 
 ### Added

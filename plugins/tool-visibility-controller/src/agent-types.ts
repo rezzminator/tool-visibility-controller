@@ -1,0 +1,39 @@
+// Each loop's agent type by id, pure: who a loop is, and which loops were
+// already reported as nobody.
+
+/**
+ * Each agent loop's type by id. The session's agent list comes first, once
+ * per id it names: a teammate's SubagentStart and SubagentStop carry its name
+ * as `agent_type`, not its type. An id no list row names takes the type the
+ * engine announced (SubagentStart, SubagentStop): a workflow's agents are
+ * never in `$.agent.list()`, so the announcement is their only source. An id
+ * neither names is an engine loop (a fork of its own: compaction, memory)
+ * that no rule governs.
+ */
+export class AgentTypes {
+  private readonly listed = new Map<string, string>();
+  private readonly announced = new Map<string, string>();
+  private readonly missed = new Set<string>();
+
+  learn(id: string, type: string): void {
+    if (id && type) this.announced.set(id, type);
+  }
+
+  async of(id: string, list: () => Promise<readonly { id: string; type: string }[]>): Promise<string | undefined> {
+    const known = this.listed.get(id);
+    if (known) return known;
+    const agent = (await list()).find((info) => info.id === id);
+    if (agent?.type) {
+      this.listed.set(id, agent.type);
+      return agent.type;
+    }
+    return this.announced.get(id) ?? agent?.type;
+  }
+
+  /** True the first time an id is reported as resolving to no type, false on every later report: one log line per loop. */
+  firstMiss(id: string): boolean {
+    if (this.missed.has(id)) return false;
+    this.missed.add(id);
+    return true;
+  }
+}

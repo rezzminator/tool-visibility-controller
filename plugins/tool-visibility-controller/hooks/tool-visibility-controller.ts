@@ -1,4 +1,5 @@
 import type { EngineInterface, On, Register } from 'claude-code';
+import { AgentTypes } from '../src/agent-types.ts';
 import { filterDeferredTools, filterEntries, filterMcpInstructions } from '../src/listings.ts';
 import {
   ancestorDirs,
@@ -28,7 +29,7 @@ const LISTINGS = new Set(['agent_listing_delta', 'skill_listing', 'mcp_instructi
 /** How deep command subdirectories are read (`a:b:c`). */
 const COMMAND_DEPTH = 3;
 
-type Cache = { policy?: Promise<Policy> };
+type Cache = { policy?: Promise<Policy>; types: AgentTypes };
 type Entry = { name: string; kind: string; isLink?: boolean };
 type Read = { name: string; owned: Owned | null };
 
@@ -159,11 +160,19 @@ async function policyOf($: EngineInterface, cache: Cache): Promise<Policy> {
   }
 }
 
-// The loop's name: MAIN for the main chat, else its agent type in the
-// session's agent list; undefined when no row names the id.
-async function loopType($: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
+// The loop's name: MAIN for the main chat, else its agent type, found in the
+// session's agent list or, for an id no row names, announced by SubagentStart
+// or SubagentStop; undefined when neither names the id.
+async function loopType($: EngineInterface, cache: Cache, agentId: string | undefined): Promise<string | undefined> {
   if (agentId === undefined) return MAIN;
-  return (await $.agent.list()).find((agent) => agent.id === agentId)?.type;
+  return cache.types.of(agentId, () => $.agent.list());
+}
+
+// A loop with no type is reported once, not at every listing and every call:
+// the engine's own forks (compaction, memory) send a listing of each kind.
+function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined): void {
+  if (!cache.types.firstMiss(String(agentId))) return;
+  $.ui.log(`tool-visibility-controller: loop ${String(agentId)} resolves to no agent type (no agent list names it and no SubagentStart announced it); its listings, spawns and tool calls are left whole`);
 }
 
 function hider(policy: Policy, set: SetName, loop: string): (name: string) => boolean {
@@ -174,9 +183,9 @@ async function rewritten($: EngineInterface, cache: Cache, type: string, text: s
   try {
     const policy = await policyOf($, cache);
     if (isEmpty(policy)) return text;
-    const loop = await loopType($, agentId);
+    const loop = await loopType($, cache, agentId);
     if (loop === undefined) {
-      $.ui.log(`tool-visibility-controller: loop ${String(agentId)} resolves to no agent type; its ${type} is left whole`);
+      logUnresolved($, cache, agentId);
       return text;
     }
     if (type === 'agent_listing_delta') return hasRules(policy, 'agents') ? filterEntries(text, hider(policy, 'agents', loop), 'agents') : text;
@@ -207,9 +216,9 @@ async function refusal($: EngineInterface, cache: Cache, targets: ReadonlyArray<
     const policy = await policyOf($, cache);
     const relevant = targets.filter(([set]) => hasRules(policy, set));
     if (relevant.length === 0) return undefined;
-    const loop = await loopType($, agentId);
+    const loop = await loopType($, cache, agentId);
     if (loop === undefined) {
-      $.ui.log(`tool-visibility-controller: ${what} from loop ${String(agentId)}, which resolves to no agent type, goes through`);
+      logUnresolved($, cache, agentId);
       return undefined;
     }
     for (const [set, item] of relevant) {
@@ -231,12 +240,23 @@ function callTargets(tool: string, skill: unknown): Array<[SetName, string]> {
 }
 
 export const register: Register = (on: On) => {
-  const cache: Cache = {};
+  const cache: Cache = { types: new AgentTypes() };
 
   on('session.start', async ($, e, next) => {
     cache.policy = undefined;
     return next(e);
   });
+
+  // A sub-agent's start and stop name its type (a teammate's, its name, so the list wins); a workflow's agents are never in $.agent.list(), so this is their only source.
+  on('classic.SubagentStart', async ($, e, next) => {
+    cache.types.learn(e.agent_id, e.agent_type);
+    return next(e);
+  }).catch(($, e, next) => next(e));
+
+  on('classic.SubagentStop', async ($, e, next) => {
+    cache.types.learn(e.agent_id, e.agent_type);
+    return next(e);
+  }).catch(($, e, next) => next(e));
 
   on('prompt.attachment', async ($, e, next) => {
     const result = await next(e);
