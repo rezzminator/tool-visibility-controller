@@ -170,9 +170,10 @@ async function loopType($: EngineInterface, cache: Cache, agentId: string | unde
 
 // A loop with no type is reported once, not at every listing and every call:
 // the engine's own forks (compaction, memory) send a listing of each kind.
+// It goes to the debug log alone: an engine fork is expected, not a fault.
 function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined): void {
   if (!cache.types.firstMiss(String(agentId))) return;
-  $.ui.log(`tool-visibility-controller: loop ${String(agentId)} resolves to no agent type (no agent list names it and no SubagentStart announced it); its listings, spawns and tool calls are left whole`);
+  $.ui.log(`tool-visibility-controller: loop ${String(agentId)} resolves to no agent type (no agent list names it and no SubagentStart announced it); its listings, spawns and tool calls are left whole`, { to: 'debug' });
 }
 
 function hider(policy: Policy, set: SetName, loop: string): (name: string) => boolean {

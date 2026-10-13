@@ -174,7 +174,7 @@ flowchart LR
 | `classic.SubagentStart`, `classic.SubagentStop` | Learn each sub-agent's type by its id, for an id the session's agent list does not name: a workflow's agents are never in it, so these two announcements are their only source. A teammate's announcement carries its name, so the list's type wins for any id it names. |
 | `session.start` | Forgets the rules read for the previous session. |
 
-It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once, to the debug log alone, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
 
 ## ⚠️ Limits
 

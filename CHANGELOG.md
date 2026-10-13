@@ -4,6 +4,9 @@ Every release of tool-visibility-controller. Versions follow [semantic versionin
 
 ## [Unreleased]
 
+### Fixed
+- A loop that resolves to no agent type, which in practice is the engine's own fork for a compaction or for memory, printed a notice into the user's transcript each time one ran. That line now goes to the debug log alone; the loop is still left whole.
+
 ## [0.2.1] — 2026-10-12
 
 ### Fixed

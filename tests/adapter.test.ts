@@ -35,6 +35,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
   const catches = new Map<string, Hook>();
   const logs: string[] = [];
+  const debugs: string[] = [];
   const agents: Array<{ id: string; type: string; status: string; description: string }> = [];
   let lists = 0;
   const under = (path: string) => Object.keys(files).filter((f) => f.startsWith(`${path}/`));
@@ -63,12 +64,13 @@ function engine(files: Record<string, string>, options: Options = {}) {
     },
     agent: { list: async () => agents },
     tool: { list: async () => TOOLS.map((name) => ({ name, description: '' })) },
-    ui: { log: (line: string) => logs.push(line) },
+    ui: { log: (line: string, opts?: { to?: string }) => (opts?.to === 'debug' ? debugs : logs).push(line) },
   };
   (register as Hook)((name: string, fn: Hook) => (hooks.set(name, fn), { catch: (handler: Hook) => catches.set(name, handler) }), {});
   const call = (name: string, e: unknown, next: Hook) => hooks.get(name)!($, e, next);
   return {
     logs,
+    debugs,
     lists: () => lists,
     sub: (id: string, type: string) => agents.push({ id, type, status: 'running', description: '' }),
     attach: (type: string, text: string, agentId?: string) =>
@@ -108,7 +110,7 @@ suite('agents', () => {
     expect(await run.attach('agent_listing_delta', AGENTS, 'wf1')).toEqual({ text: WITHOUT_CHILD });
     expect((await run.spawn('scope-child', 'wf1')).deny).toContain('Agent type scope-child is not available to a general-purpose agent');
     expect(await run.spawn('scope-child', 'wf2')).toEqual({ model: 'm', agentId: 'new' });
-    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([]);
+    expect([...run.logs, ...run.debugs].filter((line) => /no agent type/.test(line))).toEqual([]);
   });
 
   it('refuses a spawn from a loop it is not visible to, naming the rule, and lets the parent through', async () => {
@@ -302,23 +304,24 @@ suite('discovery and failure', () => {
     expect(run.logs.join('\n')).toMatch(/EACCES/);
   });
 
-  it('fails open, logged, when a loop id resolves to no agent', async () => {
+  it('fails open, logged to the debug log only, when a loop id resolves to no agent', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(await run.spawn('scope-child', 'ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
-    expect(run.logs.join('\n')).toMatch(/ghost.*no agent type/);
+    expect(run.debugs.join('\n')).toMatch(/ghost.*no agent type/);
+    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([]);
   });
 
-  it('logs a loop that resolves to no agent type once, whatever its listings, spawns and calls', async () => {
+  it('debug-logs a loop that resolves to no agent type once, whatever its listings, spawns and calls', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
     for (const type of ['deferred_tools_delta', 'skill_listing', 'agent_listing_delta', 'mcp_instructions_delta']) await run.attach(type, AGENTS, 'fork1');
     await run.spawn('scope-child', 'fork1');
     await run.tool('Bash', {}, 'fork1');
     await run.tool('Bash', {}, 'fork1');
     await run.attach('agent_listing_delta', AGENTS, 'fork2');
-    expect(run.logs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
-    expect(run.logs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.debugs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.debugs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
   });
 
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {
