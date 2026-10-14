@@ -26,7 +26,7 @@ visibility:
   visible-to:
     include: [research-lead]              # only research-lead may see and spawn this agent
   mcp:
-    include: [professor/harvester_*]      # this agent's loop sees only these MCP tools
+    include: [harvester-professor/*]      # this agent's loop sees only these MCP tools
   tools:
     exclude: [Bash]                       # and every built-in tool but Bash
 ---
@@ -105,7 +105,7 @@ visibility:
   agents:                # what THIS agent's own loop sees (agent files only)
     include: [sub-rr]
   skills:  { exclude: [deploy, ops:*] }  # skills and model-invocable commands
-  mcp:     { include: [professor/harvester_*] }   # server, or server/tool
+  mcp:     { include: [harvester-professor/*] }   # server, or server/tool
   tools:   { exclude: [WebFetch, Bash] }          # built-in tools by name
 ```
 
@@ -122,13 +122,13 @@ For what has no frontmatter you own: the main chat, built-in agents, plugin agen
 ```json
 {
   "loops": {
-    "main":    { "mcp": { "exclude": ["professor/harvester_*"] }, "agents": { "exclude": ["Explore"] } },
+    "main":    { "mcp": { "exclude": ["harvester-professor/*"] }, "agents": { "exclude": ["Explore"] } },
     "Explore": { "tools": { "exclude": ["WebFetch"] } }
   },
   "items": {
     "agents": { "Explore": { "visible-to": { "exclude": ["main"] } } },
     "skills": { "docs-kit:pdf": { "visible-to": { "include": ["writer"] } } },
-    "mcp":    { "professor/harvester_*": { "visible-to": { "exclude": ["main"] } } },
+    "mcp":    { "harvester-professor/*": { "visible-to": { "exclude": ["main"] } } },
     "tools":  {}
   }
 }
