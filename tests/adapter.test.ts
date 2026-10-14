@@ -1,4 +1,9 @@
-import { describe as suite, expect, it } from 'vitest';
+import { afterEach, describe as suite, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { register } from '../plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts';
 
 // A stand-in engine: a file system of definitions and scope files, the
@@ -29,7 +34,7 @@ const DEFERRED = ['The following deferred tools are now available via ToolSearch
 const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__harvester-professor__read', 'mcp__chat-professor__ls', 'mcp__chat-professor__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
-type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string };
+type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
 
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
@@ -41,7 +46,9 @@ function engine(files: Record<string, string>, options: Options = {}) {
   const under = (path: string) => Object.keys(files).filter((f) => f.startsWith(`${path}/`));
   const $ = {
     env: { get: async (name: string) => (options.env ?? { HOME })[name] },
-    session: { root: async () => options.root ?? ROOT },
+    session: { root: async () => { if (options.failRoot) throw new Error('policy root unreadable'); return options.root ?? ROOT; }, id: async () => { if (options.failSessionId) throw new Error('session id unreadable'); return '5f0c2a'; } },
+    clock: { now: async () => { if (options.failClock) throw new Error('clock unreadable'); return 1791991231123; } },
+    process: { run: async (argv: readonly string[], init?: { timeoutMs?: number }) => options.runProcess ? options.runProcess(argv, init) : { exitCode: 0, stdout: '', stderr: '' } },
     fs: {
       exists: async (path: string) => path in files || under(path).length > 0,
       list: async (path: string) => {
@@ -80,11 +87,12 @@ function engine(files: Record<string, string>, options: Options = {}) {
     tool: (tool: string, input: Record<string, unknown> = {}, agentId?: string) =>
       call('tool.call', { tool, tool_use_id: 't1', ...input, agentId }, async () => RAN),
     startSession: () => call('session.start', {}, async () => ({})),
+    endSession: () => hooks.has('session.end') ? call('session.end', {}, async () => ({})) : Promise.resolve({}),
     // The engine fires these whether or not the plugin hooks them.
     announce: async (event: 'classic.SubagentStart' | 'classic.SubagentStop', id: string, type: string) => {
       if (hooks.has(event)) await call(event, { agent_id: id, agent_type: type }, async () => ({}));
     },
-    caught: (name: string, e: unknown, next: Hook) => catches.get(name)!($, e, next),
+    caught: (name: string, e: unknown, next: Hook) => catches.get(name)!($, e, Object.assign(next, { error: { kind: 'throw', message: 'forced hook failure', budget: 100 }, called: false })),
   };
 }
 
@@ -342,4 +350,151 @@ suite('discovery and failure', () => {
     await run.attach('agent_listing_delta', AGENTS);
     expect(run.lists()).toBe(once * 2);
   });
+});
+
+const logDirs: string[] = [];
+afterEach(async () => { await Promise.all(logDirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))); });
+const logTemp = async () => { const dir = await mkdtemp(join(tmpdir(), 'visibility-logs-')); logDirs.push(dir); return dir; };
+const processExec = promisify(execFile);
+const realProcess: NonNullable<Options['runProcess']> = async (argv, init) => {
+  expect(init?.timeoutMs).toBe(5000);
+  try {
+    return { exitCode: 0, ...await processExec(argv[0]!, argv.slice(1)) };
+  } catch (error) {
+    const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
+    return { exitCode: typeof failure.code === 'number' ? failure.code : 1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? failure.message };
+  }
+};
+const logRows = async (dir: string, file: string) => {
+  const text = await readFile(join(dir, `${file}.jsonl`), 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  return text.trim() === '' ? [] : text.trim().split('\n').map((row) => JSON.parse(row));
+};
+
+suite('plugin log adapter', () => {
+  it.each(['PLUGIN_LOG_DIR', 'fallback'] as const)('writes error, warning and exactly one heartbeat under %s', async (source) => {
+    const dir = await logTemp();
+    const env: Record<string, string> = source === 'PLUGIN_LOG_DIR' ? { HOME: dir, PLUGIN_LOG_DIR: join(dir, 'logs') } : { HOME: dir };
+    const logs = source === 'PLUGIN_LOG_DIR' ? join(dir, 'logs/tool-visibility-controller') : join(dir, '.local/state/tool-visibility-controller/logs');
+    const opts: Options = { env, runProcess: realProcess, failRoot: true };
+    const run = engine({ [SCOPE]: '{ "loops": ' }, opts);
+    expect(await run.startSession()).toEqual({});
+    expect(await run.tool('Bash', { command: 'SECRET TOOL BODY' })).toEqual(RAN);
+    opts.failRoot = false;
+    expect(await run.tool('Bash')).toEqual(RAN);
+    await run.endSession();
+    expect(await logRows(logs, 'errors')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'tool-visibility-controller', level: 'error', event: 'check-failed', where: 'hooks/tool-visibility-controller.ts#checkCall', session: '5f0c2a', detail: { error: 'policy root unreadable' } })]);
+    expect(await logRows(logs, 'warnings')).toEqual([expect.objectContaining({ level: 'warning', event: 'scope-problem', where: 'hooks/tool-visibility-controller.ts#readScope' })]);
+    expect(await logRows(logs, 'info')).toEqual([expect.objectContaining({ level: 'info', event: 'logger-ready', session: '5f0c2a', detail: { version: '0.3.0', dir_source: source } })]);
+    expect(JSON.stringify(await logRows(logs, 'errors'))).not.toContain('SECRET TOOL BODY');
+    expect(run.logs.join('\n')).toContain('policy root unreadable; it goes through');
+    expect(run.logs.join('\n')).toMatch(/not valid JSON \(.*\); the file is ignored/);
+  });
+
+  it.each<{ event: string; files: Record<string, string>; options: Options; where: string; level: string }>([
+    { event: 'agent-dir-unlisted', files: SCOPED, options: { failList: true }, where: 'entriesOf', level: 'warnings' },
+    { event: 'agent-def-unreadable', files: SCOPED, options: { failRead: `${ROOT}/.claude/agents/scope-child.md` }, where: 'readOwned', level: 'warnings' },
+    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/agents/kid.md`]: md('kid', 'visibility:\n  tools:\n    include: Bash\n') }, options: {}, where: 'readOwned', level: 'warnings' },
+    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/skills/greet/SKILL.md`]: md('greet', 'visibility:\n  tools:\n    exclude: [Bash]\n') }, options: {}, where: 'readOwned', level: 'warnings' },
+    { event: 'scope-unreadable', files: { [SCOPE]: '{}' }, options: { failRead: SCOPE }, where: 'readScope', level: 'warnings' },
+    { event: 'scope-problem', files: { [SCOPE]: '{' }, options: {}, where: 'readScope', level: 'warnings' },
+    { event: 'user-tier-skipped', files: {}, options: { env: {} }, where: 'loadPolicy', level: 'warnings' },
+    { event: 'rewrite-failed', files: SCOPED, options: { failRoot: true }, where: 'rewritten', level: 'errors' },
+  ])('records $event at $where without changing the listing', async ({ event, files, options, where, level }) => {
+    const dir = await logTemp();
+    const run = engine(files, { ...options, env: { ...('env' in options ? options.env : { HOME: dir }), PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    expect(await run.attach('agent_listing_delta', AGENTS)).toEqual({ text: AGENTS });
+    await run.endSession();
+    expect(await logRows(join(dir, 'tool-visibility-controller'), level)).toContainEqual(expect.objectContaining({ event, where: `hooks/tool-visibility-controller.ts#${where}` }));
+  });
+
+  it('records one unresolved name per loop and denial rows for both call and spawn', async () => {
+    const dir = await logTemp();
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    for (let i = 0; i < 2; i++) {
+      expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
+      expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
+    }
+    expect((await run.tool('Bash')).deny).toContain('Tool Bash is not available');
+    expect((await run.spawn('scope-child')).deny).toContain('Agent type scope-child is not available');
+    await run.endSession();
+    const info = await logRows(join(dir, 'tool-visibility-controller'), 'info');
+    expect(info.map((row) => row.event)).toEqual(['logger-ready', 'name-unresolved', 'denied', 'denied']);
+    expect(info.filter((row) => row.event === 'denied').map((row) => row.where)).toEqual(['hooks/tool-visibility-controller.ts#tool.call', 'hooks/tool-visibility-controller.ts#agent.spawn']);
+  });
+
+  it.each(['classic.SubagentStart', 'classic.SubagentStop', 'agent.spawn', 'tool.call'])('logs hook-threw then continues %s', async (event) => {
+    const dir = await logTemp();
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    let called = 0;
+    expect(await run.caught(event, {}, async () => { called++; return RAN; })).toEqual(RAN);
+    expect(called).toBe(1);
+    await run.endSession();
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'errors')).toEqual([expect.objectContaining({ event: 'hook-threw', where: `hooks/tool-visibility-controller.ts#${event}`, detail: { kind: 'throw', error: 'forced hook failure' } })]);
+  });
+
+  it('keeps work unchanged, names the directory once per failure streak and re-arms after success', async () => {
+    const dir = await logTemp();
+    let failed = true;
+    const run = engine({ [SCOPE]: '{' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: async (argv, init) => { if (failed) throw new Error('cannot start'); return realProcess(argv, init); } });
+    await run.startSession();
+    expect(await run.tool('Bash')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(1);
+    expect(run.logs.find((line) => line.includes('plugin log '))).toContain(`${dir}/tool-visibility-controller`);
+    expect(run.logs.find((line) => line.includes('plugin log '))).toContain('cannot start');
+    failed = false;
+    await run.caught('tool.call', {}, async () => RAN);
+    await run.endSession();
+    failed = true;
+    await run.caught('agent.spawn', {}, async () => RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(2);
+  });
+
+  it('names the no-home failure explicitly', async () => {
+    const run = engine({}, { env: {} });
+    await run.startSession();
+    expect(await run.tool('Bash')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('plugin log off: no PLUGIN_LOG_DIR and no HOME'))).toHaveLength(1);
+  });
+
+  it('omits an unavailable session id but still writes the row and reports the metadata failure', async () => {
+    const dir = await logTemp();
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failSessionId: true });
+    await run.startSession();
+    await run.endSession();
+    const info = await logRows(join(dir, 'tool-visibility-controller'), 'info');
+    expect(info).toEqual([expect.objectContaining({ event: 'logger-ready' })]);
+    expect(Object.keys(info[0])).not.toContain('session');
+    expect(run.logs.join('\n')).toContain('session id unreadable');
+  });
+
+  it('reports an unavailable clock without blocking policy or inventing a row timestamp', async () => {
+    const dir = await logTemp();
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, failClock: true, runProcess: realProcess });
+    await run.startSession();
+    expect(await run.tool('Bash')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs.join('\n')).toContain('clock unreadable');
+  });
+});
+
+it('starts a new session without waiting for a prior log flush, then drains both heartbeats', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const dir = await logTemp();
+  const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: async (argv, init) => { await blocked; return realProcess(argv, init); } });
+  await run.startSession();
+  const second = run.startSession();
+  const outcome = await Promise.race([second.then(() => 'started'), new Promise<string>((resolve) => setImmediate(() => resolve('held by log I/O')))]);
+  release();
+  await second;
+  await run.endSession();
+  expect(outcome).toBe('started');
+  expect((await logRows(join(dir, 'tool-visibility-controller'), 'info')).map((row) => row.event)).toEqual(['logger-ready', 'logger-ready']);
 });
