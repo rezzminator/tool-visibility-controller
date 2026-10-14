@@ -97,18 +97,22 @@ const MCP = [
   '## claude.ai Docs',
   'Docs: living docs you create and edit here.',
   '',
-  '## professor',
-  'Read a web page → harvester_read.',
+  '## harvester-professor',
+  'Read a web page → read.',
   '',
-  'Message a chat → chat_inject.',
+  '## chat-professor',
+  'Message a chat → call.',
   '',
   '## compactor',
   'Tools registered by the compactor plugin.',
 ].join('\n');
 
 suite('filterMcpInstructions', () => {
-  it('drops a middle server block whole', () => {
-    expect(filterMcpInstructions(MCP, hide('professor'))).toBe(MCP.replace('## professor\nRead a web page → harvester_read.\n\nMessage a chat → chat_inject.\n\n', ''));
+  it.each([
+    ['harvester-professor', 'Read a web page → read.'],
+    ['chat-professor', 'Message a chat → call.'],
+  ])('drops the %s middle server block whole', (server, instructions) => {
+    expect(filterMcpInstructions(MCP, hide(server))).toBe(MCP.replace(`## ${server}\n${instructions}\n\n`, ''));
   });
 
   it('drops the last block without leaving a trailing blank line', () => {
@@ -126,7 +130,7 @@ suite('filterMcpInstructions', () => {
   it('passes the heading as written', () => {
     const seen: string[] = [];
     filterMcpInstructions(MCP, (name) => (seen.push(name), false));
-    expect(seen).toEqual(['claude.ai Docs', 'professor', 'compactor']);
+    expect(seen).toEqual(['claude.ai Docs', 'harvester-professor', 'chat-professor', 'compactor']);
   });
 });
 
@@ -137,8 +141,9 @@ const DEFERRED = [
   'The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — use ToolSearch with query "select:<name>[,<name>...]" to load tool schemas before calling them:',
   'WebFetch',
   'WebSearch',
-  'mcp__professor__harvester_read',
-  'mcp__professor__harvester_search_web',
+  'mcp__harvester-professor__read',
+  'mcp__harvester-professor__search_web',
+  'mcp__chat-professor__call',
   '',
   'The following MCP servers are still connecting — their tools (typically named mcp__<server>__*) are not yet available but will appear shortly:',
   'WebFetch',
@@ -149,8 +154,8 @@ const DEFERRED = [
 
 suite('filterDeferredTools', () => {
   it('drops hidden tool names and keeps every other byte', () => {
-    expect(filterDeferredTools(DEFERRED, hide('WebFetch', 'mcp__professor__harvester_search_web'))).toBe(
-      DEFERRED.replace('\nWebFetch\nWebSearch', '\nWebSearch').replace('mcp__professor__harvester_search_web\n', ''),
+    expect(filterDeferredTools(DEFERRED, hide('WebFetch', 'mcp__harvester-professor__search_web'))).toBe(
+      DEFERRED.replace('\nWebFetch\nWebSearch', '\nWebSearch').replace('mcp__harvester-professor__search_web\n', ''),
     );
   });
 

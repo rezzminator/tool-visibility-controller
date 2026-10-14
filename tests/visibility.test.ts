@@ -24,8 +24,8 @@ suite('readDefinition: the visibility field', () => {
     ],
     [
       'flow maps per set',
-      'visibility:\n  skills:  { include: [a, "b"], exclude: [c] }   # trailing comment\n  mcp: {exclude: [professor/harvester_*]}',
-      { sets: { skills: { include: ['a', 'b'], exclude: ['c'] }, mcp: { exclude: ['professor/harvester_*'] } } },
+      'visibility:\n  skills:  { include: [a, "b"], exclude: [c] }   # trailing comment\n  mcp: {exclude: [harvester-professor/*]}',
+      { sets: { skills: { include: ['a', 'b'], exclude: ['c'] }, mcp: { exclude: ['harvester-professor/*'] } } },
     ],
     [
       'block lists, indented and at the key\'s own indent',
@@ -39,8 +39,8 @@ suite('readDefinition: the visibility field', () => {
     ],
     [
       'an MCP server name with spaces and a glob',
-      'visibility:\n  mcp:\n    include: [claude.ai Docs/*, professor]',
-      { sets: { mcp: { include: ['claude.ai Docs/*', 'professor'] } } },
+      'visibility:\n  mcp:\n    include: [claude.ai Docs/*, harvester-professor]',
+      { sets: { mcp: { include: ['claude.ai Docs/*', 'harvester-professor'] } } },
     ],
     [
       'flow collections with a trailing comma',

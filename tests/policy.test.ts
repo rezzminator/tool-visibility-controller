@@ -19,7 +19,7 @@ suite('globMatch', () => {
   it.each([
     ['WebFetch', 'WebFetch', true],
     ['WebFetch', 'WebFetchX', false],
-    ['harvester_*', 'harvester_search_web', true],
+    ['search_*', 'search_web', true],
     ['*', 'anything', true],
     ['rr*', 'rr-pro-max', true],
     ['a.b', 'axb', false],
@@ -30,12 +30,12 @@ suite('globMatch', () => {
 
 suite('itemMatches', () => {
   it.each([
-    ['mcp', 'professor', 'mcp__professor__harvester_read', true],
-    ['mcp', 'professor/harvester_*', 'mcp__professor__harvester_read', true],
-    ['mcp', 'professor/harvester_*', 'mcp__professor__chat_ls', false],
+    ['mcp', 'harvester-professor', 'mcp__harvester-professor__read', true],
+    ['mcp', 'harvester-professor/*', 'mcp__harvester-professor__read', true],
+    ['mcp', 'harvester-professor/*', 'mcp__chat-professor__ls', false],
     ['mcp', 'claude.ai Docs/*', 'mcp__claude_ai_Docs__read', true],
-    ['mcp', 'mcp__professor__chat_*', 'mcp__professor__chat_ls', true],
-    ['mcp', 'prof', 'mcp__professor__chat_ls', false],
+    ['mcp', 'mcp__chat-professor__*', 'mcp__chat-professor__call', true],
+    ['mcp', 'prof', 'mcp__chat-professor__ls', false],
     ['mcp', 'my  srv/*', 'mcp__my__srv__read', true],
     ['mcp', 'my  srv/read', 'mcp__my__srv__read', true],
     ['skills', 'docs-kit:pdf', 'docs-kit:pdf', true],
@@ -58,7 +58,7 @@ function policy(): Policy {
   return buildPolicy(
     [
       { set: 'agents', name: 'sub-tracer', path: '/u/.claude/agents/sub-tracer.md', visibility: { visibleTo: { include: ['tracer', 'sub-tracer'] }, sets: {} } },
-      { set: 'agents', name: 'rr', path: '/p/.claude/agents/rr.md', visibility: { sets: { mcp: { include: ['professor/harvester_*'] }, tools: { exclude: ['Bash'] } } } },
+      { set: 'agents', name: 'rr', path: '/p/.claude/agents/rr.md', visibility: { sets: { mcp: { include: ['harvester-professor/*'] }, tools: { exclude: ['Bash'] } } } },
       { set: 'agents', name: 'both', path: '/p/.claude/agents/both.md', visibility: { visibleTo: { include: ['a*'], exclude: ['ab'] }, sets: {} } },
       { set: 'skills', name: 'greet', path: '/p/.claude/skills/greet/SKILL.md', visibility: { visibleTo: { exclude: [MAIN] }, sets: { tools: { exclude: ['x'] } } } },
     ],
@@ -66,7 +66,7 @@ function policy(): Policy {
       {
         path: '/p/.claude/tool-visibility-controller.json',
         scope: {
-          loops: { main: { agents: { exclude: ['Explore'] }, mcp: { exclude: ['professor/harvester_*'] } } },
+          loops: { main: { agents: { exclude: ['Explore'] }, mcp: { exclude: ['harvester-professor/*'] } } },
           items: { agents: { Explore: { include: ['rr'] } }, skills: {}, mcp: {}, tools: { WebFetch: { exclude: ['Explore'] } } },
         },
       },
@@ -83,13 +83,13 @@ suite('decide', () => {
     ['item include+exclude: outside include', 'agents', 'b', 'both', false],
     ['item exclude refuses the excluded loop', 'skills', MAIN, 'greet', false],
     ['item exclude admits any other loop', 'skills', 'rr', 'greet', true],
-    ['viewer include admits a match', 'mcp', 'rr', 'mcp__professor__harvester_read', true],
-    ['viewer include refuses the rest', 'mcp', 'rr', 'mcp__professor__chat_ls', false],
+    ['viewer include admits a match', 'mcp', 'rr', 'mcp__harvester-professor__read', true],
+    ['viewer include refuses the rest', 'mcp', 'rr', 'mcp__chat-professor__ls', false],
     ['viewer exclude refuses a match', 'tools', 'rr', 'Bash', false],
     ['viewer exclude admits the rest', 'tools', 'rr', 'Read', true],
     ['a skill file has no viewer blocks', 'tools', 'greet', 'x', true],
     ['scope loop rule for main', 'agents', MAIN, 'Explore', false],
-    ['scope loop rule for main, mcp', 'mcp', MAIN, 'mcp__professor__harvester_search_web', false],
+    ['scope loop rule for main, mcp', 'mcp', MAIN, 'mcp__harvester-professor__search_web', false],
     ['scope item rule for a built-in agent', 'agents', 'tracer', 'Explore', false],
     ['scope item rule admits its loop', 'agents', 'rr', 'Explore', true],
     ['scope item rule for a built-in tool', 'tools', 'Explore', 'WebFetch', false],
@@ -110,7 +110,7 @@ suite('decide', () => {
   it('names the refusing rule: its block and its file', () => {
     const verdict = decide(policy(), 'agents', MAIN, 'sub-tracer');
     expect(verdict).toMatchObject({ allowed: false, side: 'item', rule: { block: 'visibility.visible-to', path: '/u/.claude/agents/sub-tracer.md' } });
-    expect(decide(policy(), 'mcp', MAIN, 'mcp__professor__harvester_read')).toMatchObject({
+    expect(decide(policy(), 'mcp', MAIN, 'mcp__harvester-professor__read')).toMatchObject({
       allowed: false,
       side: 'viewer',
       rule: { block: 'loops.main.mcp', path: '/p/.claude/tool-visibility-controller.json' },
@@ -135,9 +135,9 @@ suite('denyText', () => {
   });
 
   it('names an exclusion and the matching pattern, and what to do instead', () => {
-    const text = denyText('mcp', 'mcp__professor__harvester_read', MAIN, decide(policy(), 'mcp', MAIN, 'mcp__professor__harvester_read'));
-    expect(text).toContain('MCP tool mcp__professor__harvester_read is not available to the main chat');
-    expect(text).toContain('excludes professor/harvester_*');
+    const text = denyText('mcp', 'mcp__harvester-professor__read', MAIN, decide(policy(), 'mcp', MAIN, 'mcp__harvester-professor__read'));
+    expect(text).toContain('MCP tool mcp__harvester-professor__read is not available to the main chat');
+    expect(text).toContain('excludes harvester-professor/*');
     expect(text).toContain('loops.main.mcp in /p/.claude/tool-visibility-controller.json');
     expect(text).toMatch(/use another tool/i);
   });
@@ -151,13 +151,13 @@ suite('readScopeFile', () => {
   it('reads loops and items', () => {
     const read = readScopeFile(
       JSON.stringify({
-        loops: { main: { mcp: { exclude: ['professor/harvester_*'] } }, Explore: { tools: { exclude: ['WebFetch'] } } },
+        loops: { main: { mcp: { exclude: ['harvester-professor/*'] } }, Explore: { tools: { exclude: ['WebFetch'] } } },
         items: { agents: { Explore: { 'visible-to': { exclude: ['main'] } } }, skills: { 'plugin:x': { 'visible-to': { include: ['tracer'] } } }, tools: {} },
       }),
     );
     expect(read.problems).toEqual([]);
     expect(read.scope).toEqual({
-      loops: { main: { mcp: { exclude: ['professor/harvester_*'] } }, Explore: { tools: { exclude: ['WebFetch'] } } },
+      loops: { main: { mcp: { exclude: ['harvester-professor/*'] } }, Explore: { tools: { exclude: ['WebFetch'] } } },
       items: { agents: { Explore: { exclude: ['main'] } }, skills: { 'plugin:x': { include: ['tracer'] } }, mcp: {}, tools: {} },
     });
   });
