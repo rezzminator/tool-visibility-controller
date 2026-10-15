@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -70,59 +70,24 @@ describe('plugin log row contract', () => {
 
 describe('plugin log append door', () => {
   it.each([
-    { name: '4032-byte counterexample', session: 's'.repeat(3900), sourceBytes: 4032, marker: false, fails: false },
-    { name: 'escaped 3900-byte session', session: '"\\\n'.repeat(650), sourceBytes: 4032, marker: false, fails: false },
-    { name: 'multibyte 3900-byte session', session: '🙂'.repeat(975), sourceBytes: 4032, marker: false, fails: false },
-    { name: 'truncation marker fits', session: 's'.repeat(3860), sourceBytes: 3992, marker: true, fails: false },
-    { name: 'mandatory fields exactly fit', session: 's'.repeat(3921), sourceBytes: 4053, marker: false, fails: false },
-    { name: 'mandatory fields cannot fit', session: 's'.repeat(3922), sourceBytes: 4054, marker: false, fails: true },
-  ])('bounds cascading cap notices without shortening session: $name', async ({ session, sourceBytes, marker, fails }) => {
+    { name: 'ASCII', session: 's'.repeat(3900) },
+    { name: 'escaped', session: '"\\\n'.repeat(650) },
+    { name: 'UTF-8', session: '🙂'.repeat(975) },
+    { name: 'previously rejected', session: 's'.repeat(3922) },
+  ])('bounds cascading cap notices and retains the session key: $name', async ({ session }) => {
     const { levelRow, appendArgv } = await writer();
     const dir = await temp();
     const before = Buffer.alloc(20971521, 'x');
     for (const file of ['errors.jsonl', 'warnings.jsonl']) await writeFile(join(dir, file), before);
     const row = levelRow({ ...fields, event: '', msg: '', where: '', session }, NOW);
-    expect(Buffer.byteLength(row)).toBe(sourceBytes);
     expect(JSON.parse(row).session).toBe(session);
-    const [argv] = appendArgv(dir, PLUGIN, [row]);
-    expect(argv!.slice(4)).toEqual([dir, PLUGIN, 'errors.jsonl', row]);
-    const result = await run(argv!);
-    if (fails) {
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).toContain(join(dir, 'warnings.jsonl'));
-      expect(result.stderr).toContain('session exceeds cap notice byte budget');
-      for (const file of ['errors.jsonl', 'warnings.jsonl']) {
-        await expect(readFile(join(dir, file)).then((actual) => actual.equals(before))).resolves.toBe(true);
-        await expect(readFile(join(dir, `${file}.1`))).rejects.toMatchObject({ code: 'ENOENT' });
-        await writeFile(join(dir, `${file}.1`), `older ${file}\n`);
-      }
-      // Refusal must also preserve an archive already holding the older generation.
-      const retry = await run(argv!);
-      expect(retry.exitCode).not.toBe(0);
-      expect(retry.stderr).toContain('session exceeds cap notice byte budget');
-      for (const file of ['errors.jsonl', 'warnings.jsonl']) {
-        expect((await readFile(join(dir, file))).equals(before)).toBe(true);
-        expect(await readFile(join(dir, `${file}.1`), 'utf8')).toBe(`older ${file}\n`);
-      }
-      return;
-    }
-    expect(result).toMatchObject({ exitCode: 0 });
-    const text = await readFile(join(dir, 'warnings.jsonl'), 'utf8');
-    expect(text.endsWith('\n')).toBe(true);
-    const lines = text.slice(0, -1).split('\n');
+    expect(await run(appendArgv(dir, PLUGIN, [row])[0]!)).toMatchObject({ exitCode: 0 });
+    const lines = (await readFile(join(dir, 'warnings.jsonl'), 'utf8')).trimEnd().split('\n');
     expect(lines).toHaveLength(2);
     for (const [index, line] of lines.entries()) {
       expect(Buffer.byteLength(`${line}\n`)).toBeLessThanOrEqual(4096);
-      const notice = JSON.parse(line);
-      expect(notice).toMatchObject({ plugin: PLUGIN, level: 'warning', event: 'log-capped', where: 'src/plugin-log.ts#APPEND_SCRIPT', session });
-      const file = ['warnings.jsonl', 'errors.jsonl'][index];
-      const unbounded = { ...notice, msg: 'level file moved aside after reaching the cap', detail: { file, bytes: 20971521 } };
-      const originalBytes = Buffer.byteLength(`${JSON.stringify(unbounded)}\n`);
-      if (sourceBytes === 4032 && index === 1) expect(originalBytes).toBe(4170);
-      expect(notice.msg.length).toBeLessThan(unbounded.msg.length);
-      if (marker) expect(notice.detail).toEqual({ truncated: true, bytes: originalBytes });
-      else expect(Object.hasOwn(notice, 'detail')).toBe(false);
-      expect((await readFile(join(dir, `${file}.1`))).equals(before)).toBe(true);
+      expect(JSON.parse(line)).toMatchObject({ plugin: PLUGIN, level: 'warning', event: 'log-capped', where: 'src/plugin-log.ts#APPEND_SCRIPT', session: Array.from(session).slice(0, 64).join(''), detail: { file: ['warnings.jsonl', 'errors.jsonl'][index], bytes: 20971521 } });
+      expect((await readFile(join(dir, `${['warnings.jsonl', 'errors.jsonl'][index]}.1`))).equals(before)).toBe(true);
     }
     expect(await readFile(join(dir, 'errors.jsonl'), 'utf8')).toBe(row);
   });
@@ -197,14 +162,14 @@ describe('plugin log append door', () => {
 });
 
 describe('plugin log queue', () => {
-  it('serializes 64-pair batches, drains work and avoids empty forks', async () => {
+  it('serializes 64-row batches, drains work and avoids empty forks', async () => {
     const { PluginLogQueue, levelRow } = await writer();
     const queue = new PluginLogQueue('/x/logs', PLUGIN, () => {});
     let active = 0;
     const sizes: number[] = [];
     const processRun = async (argv: readonly string[]) => {
       expect(active++).toBe(0);
-      sizes.push((argv.length - 6) / 2);
+      sizes.push((argv.length - 6) / 3);
       await Promise.resolve();
       active--;
       return { exitCode: 0, stdout: '', stderr: '' };
@@ -266,31 +231,10 @@ it.skipIf(process.getuid?.() === 0)('reports a cap inspection failure instead of
   } finally { await chmod(file, 0o600); }
 });
 
-it('tightens existing writable log directories, level files and archives without changing data', async () => {
-  const { levelRow, appendArgv } = await writer();
-  const dir = await temp();
-  await chmod(dir, 0o755);
-  const files = ['errors.jsonl', 'warnings.jsonl', 'info.jsonl'];
-  for (const file of files) {
-    await writeFile(join(dir, file), 'prior\n', { mode: 0o644 });
-    await writeFile(join(dir, `${file}.1`), 'archive\n', { mode: 0o644 });
-  }
-  const row = levelRow(fields, NOW);
-  expect(await run(appendArgv(dir, PLUGIN, [row])[0]!)).toMatchObject({ exitCode: 0 });
-  expect((await stat(dir)).mode & 0o777).toBe(0o700);
-  for (const file of files) {
-    expect((await stat(join(dir, file))).mode & 0o777).toBe(0o600);
-    expect((await stat(join(dir, `${file}.1`))).mode & 0o777).toBe(0o600);
-    expect(await readFile(join(dir, `${file}.1`), 'utf8')).toBe('archive\n');
-    expect(await readFile(join(dir, file), 'utf8')).toBe(file === 'errors.jsonl' ? `prior\n${row}` : 'prior\n');
-  }
-});
-
 it('preserves only the canonical triggering session in every cascading cap notice', async () => {
   const { levelRow, appendArgv } = await writer();
   const actual: Array<Array<{ file: string; session?: string; hasSession: boolean }>> = [];
   const expected: typeof actual = [];
-  const modes: number[] = [];
   const samples = [
     { session: '5f0c2a', detail: { session: 'fake detail session' } },
     { session: 'quotes " backslash \\ newline\nend', detail: { session: 'fake " \\ \n' } },
@@ -303,36 +247,12 @@ it('preserves only the canonical triggering session in every cascading cap notic
     }
     const row = levelRow({ ...fields, ...sample, msg: 'field-looking text ,"session":"fake", "detail": {"session":"fake"}', where: 'src/plugin-log.ts#check "session": "fake"' }, NOW);
     const [argv] = appendArgv(dir, PLUGIN, [row]);
-    expect(argv!.slice(4)).toEqual([dir, PLUGIN, 'errors.jsonl', row]);
+    expect(argv!.slice(4)).toEqual([dir, PLUGIN, 'errors.jsonl', row, sample.session === undefined ? '' : `,"session":${JSON.stringify(sample.session)}`]);
     expect(await run(argv!)).toMatchObject({ exitCode: 0 });
     const notices = (await readFile(join(dir, 'warnings.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(notices.map((notice) => notice.event)).toEqual(['log-capped', 'log-capped']);
     actual.push(notices.map((notice) => ({ file: notice.detail.file, ...(Object.hasOwn(notice, 'session') ? { session: notice.session } : {}), hasSession: Object.hasOwn(notice, 'session') })));
     expected.push(['warnings.jsonl', 'errors.jsonl'].map((file) => ({ file, ...(sample.session === undefined ? {} : { session: sample.session }), hasSession: sample.session !== undefined })));
-    for (const file of ['errors.jsonl', 'warnings.jsonl']) {
-      modes.push((await stat(join(dir, file))).mode & 0o777, (await stat(join(dir, `${file}.1`))).mode & 0o777);
-    }
   }
   expect(actual).toEqual(expected);
-  expect(modes).toEqual(Array(modes.length).fill(0o600));
-});
-
-it('append refuses aliased directory and level endpoints without changing foreign data', async () => {
-  const { appendArgv, levelRow } = await writer();
-  for (const leaf of ['directory', 'errors.jsonl', 'warnings.jsonl', 'info.jsonl', 'errors.jsonl.1', 'warnings.jsonl.1', 'info.jsonl.1']) {
-    const parent = await temp();
-    const outside = join(parent, 'outside');
-    await mkdir(outside, { mode: 0o755 });
-    const sentinel = join(outside, 'sentinel');
-    await writeFile(sentinel, 'protected', { mode: 0o644 });
-    const d = join(parent, 'logs');
-    if (leaf === 'directory') await symlink(outside, d);
-    else { await mkdir(d); await symlink(sentinel, join(d, leaf)); }
-    const result = await run(appendArgv(d, PLUGIN, [levelRow(fields, NOW)])[0]!);
-    expect(result.exitCode, leaf).not.toBe(0);
-    expect(result.stderr, leaf).toContain('symlink');
-    expect(await readFile(sentinel, 'utf8'), leaf).toBe('protected');
-    expect((await stat(sentinel)).mode & 0o777, leaf).toBe(0o644);
-    expect((await stat(outside)).mode & 0o777, leaf).toBe(0o755);
-  }
 });

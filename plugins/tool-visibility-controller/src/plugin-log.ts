@@ -65,86 +65,25 @@ umask 077
 dir=$1
 plugin=$2
 shift 2
-if [ -L "$dir" ]; then echo "plugin log $dir: directory is a symlink" >&2; exit 1; fi
-for leaf in errors.jsonl errors.jsonl.1 warnings.jsonl warnings.jsonl.1 info.jsonl info.jsonl.1; do
-  if [ -L "$dir/$leaf" ]; then echo "plugin log $dir/$leaf: level endpoint is a symlink" >&2; exit 1; fi
-done
-if [ -e "$dir" ] && { [ ! -d "$dir" ] || [ ! -w "$dir" ] || [ ! -x "$dir" ]; }; then
-  printf 'plugin log directory not writable: %s\\n' "$dir" >&2
-  exit 1
-fi
 mkdir -p "$dir"
-log_files='errors.jsonl errors.jsonl.1 warnings.jsonl warnings.jsonl.1 info.jsonl info.jsonl.1'
-# Inspect original access before chmod can grant previously denied access.
-for existing in $log_files; do
-  if [ -e "$dir/$existing" ] && { [ ! -f "$dir/$existing" ] || [ ! -r "$dir/$existing" ] || [ ! -w "$dir/$existing" ]; }; then
-    printf 'plugin log file not readable and writable: %s/%s\\n' "$dir" "$existing" >&2
-    exit 1
-  fi
-done
-chmod 700 "$dir"
-for existing in $log_files; do
-  if [ -e "$dir/$existing" ]; then chmod 600 "$dir/$existing"; fi
-done
-render_cap_notice() {
-  printf '{"ts":"%s","plugin":"%s","level":"warning","event":"log-capped","msg":"%s","where":"src/plugin-log.ts#APPEND_SCRIPT"%s%s}' "$stamp" "$plugin" "$cap_msg" "$session_fragment" "$cap_detail"
-}
-# Keep each prepared notice local while a warnings cap is handled recursively.
+# The session fragment is JSON data bounded by levelRow, never shell source.
 cap_file() (
   if [ ! -f "$dir/$1" ]; then return; fi
   size=$(wc -c < "$dir/$1")
   if [ "$size" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then
     archived_size=$size
-    stamp=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-    cap_full_msg='level file moved aside after reaching the cap'
-    cap_msg=$cap_full_msg
-    cap_detail=$(printf ',"detail":{"file":"%s","bytes":%s}' "$1" "$archived_size")
-    cap_notice=$(render_cap_notice)
-    cap_bytes=$(printf '%s\\n' "$cap_notice" | wc -c)
-    if [ "$cap_bytes" -gt ${ROW_MAX_BYTES} ]; then
-      cap_detail=$(printf ',"detail":{"truncated":true,"bytes":%s}' "$cap_bytes")
-      cap_msg=''
-      cap_notice=$(render_cap_notice)
-      cap_bytes=$(printf '%s\\n' "$cap_notice" | wc -c)
-      if [ "$cap_bytes" -gt ${ROW_MAX_BYTES} ]; then
-        cap_detail=''
-        cap_notice=$(render_cap_notice)
-        cap_bytes=$(printf '%s\\n' "$cap_notice" | wc -c)
-      fi
-      if [ "$cap_bytes" -gt ${ROW_MAX_BYTES} ]; then
-        printf 'plugin log %s/warnings.jsonl: session exceeds cap notice byte budget\\n' "$dir" >&2
-        exit 1
-      fi
-      # Only this fixed ASCII message is cut, never serialized session DATA.
-      remaining=$((${ROW_MAX_BYTES} - cap_bytes))
-      if [ "$remaining" -gt 0 ]; then
-        cap_msg=$(printf '%s' "$cap_full_msg" | cut -c "1-$remaining")
-      fi
-      cap_notice=$(render_cap_notice)
-    fi
-    # Refuse an impossible parent or cascading notice before moving either file.
     if [ "$1" != warnings.jsonl ]; then cap_file warnings.jsonl; fi
     mv -f "$dir/$1" "$dir/$1.1"
-    printf '%s\\n' "$cap_notice" >> "$dir/warnings.jsonl"
+    stamp=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    printf '{"ts":"%s","plugin":"%s","level":"warning","event":"log-capped","msg":"level file moved aside after reaching the cap","where":"src/plugin-log.ts#APPEND_SCRIPT"%s,"detail":{"file":"%s","bytes":%s}}\\n' "$stamp" "$plugin" "$session_fragment" "$1" "$archived_size" >> "$dir/warnings.jsonl"
   fi
 )
 while [ "$#" -gt 0 ]; do
   file=$1
   row=$2
-  shift 2
+  session_fragment=$3
+  shift 3
   case "$file" in errors.jsonl|warnings.jsonl|info.jsonl) ;; *) printf 'invalid plugin log file: %s/%s\\n' "$dir" "$file" >&2; exit 2 ;; esac
-  # levelRow's canonical header puts session before detail. Escaped JSON
-  # strings cannot imitate these unescaped property boundaries. This is
-  # serialized JSON DATA for printf, never evaluated as shell source.
-  detail_key=',"detail":'
-  session_key=',"session":'
-  header=\${row%?}
-  header=\${header%'}'}
-  header=\${header%%"$detail_key"*}
-  session_fragment=''
-  case "$header" in
-    *"$session_key"*) session_fragment="$session_key\${header#*"$session_key"}" ;;
-  esac
   cap_file "$file"
   printf '%s' "$row" >> "$dir/$file"
 done`;
@@ -155,9 +94,14 @@ export function appendArgv(dir: string, plugin: string, rows: readonly string[])
   for (let i = 0; i < rows.length; i += 64) {
     const argv = ['/bin/sh', '-c', APPEND_SCRIPT, 'plugin-log', dir, plugin];
     for (const row of rows.slice(i, i + 64)) {
-      const level = JSON.parse(row).level as Level;
+      const parsed = JSON.parse(row) as LevelFields & { ts: string };
+      const level = parsed.level;
       if (!Object.hasOwn(FILES, level)) throw new Error(`invalid plugin log level: ${String(level)}`);
-      argv.push(FILES[level], row);
+      // Reserve the longest filename and a 19-digit filesystem byte count.
+      // Reuse the row truncation rule for pathological session values.
+      const cap = JSON.parse(levelRow({ plugin, level: 'warning', event: 'log-capped', msg: 'level file moved aside after reaching the cap', where: 'src/plugin-log.ts#APPEND_SCRIPT', session: parsed.session, detail: { file: 'warnings.jsonl', bytes: 2 ** 63 } }, Date.parse(parsed.ts))) as LevelFields;
+      const session = cap.session ? `,"session":${JSON.stringify(cap.session)}` : '';
+      argv.push(FILES[level], row, session);
     }
     commands.push(argv);
   }
@@ -202,7 +146,7 @@ export class PluginLogQueue {
         return { written: 0, dropped: rows.length };
       }
       for (const argv of commands) {
-        const count = (argv.length - 6) / 2;
+        const count = (argv.length - 6) / 3;
         try {
           if (!run) throw new Error('process.run is unavailable');
           const response = await run(argv);

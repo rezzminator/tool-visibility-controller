@@ -2,10 +2,15 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.3.1] — 2026-10-15
+
+### Changed
+- Plugin logs use plain create-and-append with private modes for new files; cap notices use the row truncation rule and retain the session key.
+
 ## [0.3.0] — 2026-10-14
 
 ### Added
-- Standalone errors, warnings and info JSONL files under `$PLUGIN_LOG_DIR/tool-visibility-controller/`, or `$HOME/.local/state/tool-visibility-controller/logs/` when unset. Rows include stable component names, optional session ids and a session-start `logger-ready` heartbeat; file caps rename to `.1` and emit `log-capped` warnings.
+- Standalone errors, warnings and info JSONL files under `$PLUGIN_LOG_DIR/tool-visibility-controller/`, or `$HOME/.local/state/tool-visibility-controller/logs/` when unset. Rows include stable component names, optional session ids; file caps rename to `.1` and emit `log-capped` warnings.
 - Policy read/rewrite failures, ignored definitions and scope blocks, denials and the four fail-open hook catches now leave durable rows beside the existing notices. Log failures never alter policy outcomes and show one fallback notice per failing streak, re-armed after recovery.
 
 ### Fixed

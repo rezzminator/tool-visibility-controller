@@ -7,7 +7,7 @@
 **Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop**
 
 [![CI](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://code.claude.com/docs/en/plugins)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -172,16 +172,16 @@ flowchart LR
 | `agent.spawn` | Refuses the spawn of an agent type the calling loop may not use. |
 | `tool.call` | Refuses a built-in tool, an MCP tool, or a `Skill` call naming a skill or command the calling loop may not use. |
 | `classic.SubagentStart`, `classic.SubagentStop` | Learn each sub-agent's type by its id, for an id the session's agent list does not name: a workflow's agents are never in it, so these two announcements are their only source. A teammate's announcement carries its name, so the list's type wins for any id it names. |
-| `session.start` | Forgets the rules read for the previous session and queues one `logger-ready` info row. |
+| `session.start` | Forgets the rules read for the previous session. |
 | `session.end` | Drains pending plugin log writes. |
 
 It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once per loop to the debug log and the info level file, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
 
 ### Logs
 
-Errors, warnings and narrowly scoped info events append to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/tool-visibility-controller/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/tool-visibility-controller/logs/`. Each session starts with a `logger-ready` row carrying the plugin version and directory source. Rows identify the event, component and available session id; they never include prompt, transcript or tool-input bodies.
+Errors, warnings and narrowly scoped info events append to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/tool-visibility-controller/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/tool-visibility-controller/logs/`. Rows identify the event, component and available session id; they never include prompt, transcript or tool-input bodies.
 
-Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. Writes use private modes and run off the policy path, with a five-second process timeout; session end drains pending writes. A file over 20 MiB moves to `.1`, replacing the previous `.1`, and adds a `log-capped` warning. Concurrent cap renames are not locked. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. Existing screen and debug notices stay.
+Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes; writes run off the policy path, with a five-second process timeout; session end drains pending writes. A file over 20 MiB moves to `.1`, replacing the previous `.1`, and adds a `log-capped` warning. Concurrent cap renames are not locked. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. Existing screen and debug notices stay.
 
 ## ⚠️ Limits
 

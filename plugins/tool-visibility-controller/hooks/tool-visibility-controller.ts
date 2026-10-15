@@ -30,7 +30,7 @@ const LISTINGS = new Set(['agent_listing_delta', 'skill_listing', 'mcp_instructi
 /** How deep command subdirectories are read (`a:b:c`). */
 const COMMAND_DEPTH = 3;
 
-type Logger = { queue: PluginLogQueue; session?: string; dir?: string; source: 'PLUGIN_LOG_DIR' | 'fallback' };
+type Logger = { queue: PluginLogQueue; session?: string };
 type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean };
 type Cache = { policy?: Promise<Policy>; types: AgentTypes; log: LogState; logDrain: Promise<void> };
 type Entry = { name: string; kind: string; isLink?: boolean };
@@ -41,7 +41,6 @@ function message(error: unknown): string {
 }
 
 const PLUGIN = 'tool-visibility-controller';
-const VERSION = '0.3.0';
 
 // The logger's last-resort screen door never interferes with a policy result.
 function logFallback($: EngineInterface, text: string): void {
@@ -59,7 +58,7 @@ async function loggerOf($: EngineInterface, state: LogState): Promise<Logger> {
     try { session = await $.session.id(); } catch (error) {
       logFallback($, `plugin log ${dir ?? 'off'}: session id unavailable: ${message(error)}; session omitted`);
     }
-    return { queue: new PluginLogQueue(dir, PLUGIN, (text) => logFallback($, text)), session, dir, source: override ? 'PLUGIN_LOG_DIR' as const : 'fallback' as const };
+    return { queue: new PluginLogQueue(dir, PLUGIN, (text) => logFallback($, text)), session };
   })();
   return state.logger;
 }
@@ -69,7 +68,7 @@ function plog($: EngineInterface, cache: Cache, level: Level, event: string, msg
   state.work = state.work.then(async () => {
     const logger = await loggerOf($, state);
     const now = await $.clock.now();
-    logger.queue.add(levelRow({ plugin: PLUGIN, level, event, msg, where: `hooks/tool-visibility-controller.ts#${hook}`, session: logger.session, detail: event === 'logger-ready' ? { version: VERSION, dir_source: logger.source } : detail }, now));
+    logger.queue.add(levelRow({ plugin: PLUGIN, level, event, msg, where: `hooks/tool-visibility-controller.ts#${hook}`, session: logger.session, detail }, now));
     await logger.queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }));
     state.failing = false;
   }).catch((error) => {
@@ -297,7 +296,6 @@ export const register: Register = (on: On) => {
     cache.policy = undefined;
     cache.logDrain = Promise.all([cache.logDrain, cache.log.work]).then(() => {});
     cache.log = { work: Promise.resolve(), failing: false };
-    plog($, cache, 'info', 'logger-ready', 'plugin logger ready', 'session.start');
     return next(e);
   });
 
