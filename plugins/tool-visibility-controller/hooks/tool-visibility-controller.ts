@@ -1,6 +1,7 @@
 import type { EngineInterface, On, Register } from 'claude-code';
 import { levelRow, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
 import { AgentTypes } from '../src/agent-types.ts';
+import { SpawnCalls } from '../src/spawns.ts';
 import { filterDeferredTools, filterEntries, filterMcpInstructions } from '../src/listings.ts';
 import {
   ancestorDirs,
@@ -32,7 +33,7 @@ const COMMAND_DEPTH = 3;
 
 type Logger = { queue: PluginLogQueue; session?: string };
 type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean };
-type Cache = { policy?: Promise<Policy>; types: AgentTypes; log: LogState; logDrain: Promise<void> };
+type Cache = { policy?: Promise<Policy>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void> };
 type Entry = { name: string; kind: string; isLink?: boolean };
 type Read = { name: string; owned: Owned | null };
 
@@ -290,7 +291,7 @@ function callTargets(tool: string, skill: unknown): Array<[SetName, string]> {
 }
 
 export const register: Register = (on: On) => {
-  const cache: Cache = { types: new AgentTypes(), log: { work: Promise.resolve(), failing: false }, logDrain: Promise.resolve() };
+  const cache: Cache = { types: new AgentTypes(), spawns: new SpawnCalls(), log: { work: Promise.resolve(), failing: false }, logDrain: Promise.resolve() };
 
   on('session.start', async ($, e, next) => {
     cache.policy = undefined;
@@ -329,7 +330,9 @@ export const register: Register = (on: On) => {
   });
 
   // A hook that throws or overruns its budget lets the spawn through.
+  // Only a fresh spawn is gated: a resume runs under the loop resuming it, not its parent (see src/spawns.ts).
   on('agent.spawn', async ($, e, next) => {
+    if (e.workflow === undefined && !cache.spawns.claim(e.tool_use_id)) return next(e);
     const deny = await checkCall($, cache, [['agents', e.subagentType]], e.parentAgentId);
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'agent.spawn');
     return deny === undefined ? next(e) : { deny };
@@ -340,6 +343,7 @@ export const register: Register = (on: On) => {
 
   // A hook that throws or overruns its budget lets the call through.
   on('tool.call', async ($, e, next) => {
+    if (e.tool === 'Agent') cache.spawns.note(e.tool_use_id);
     const deny = await checkCall($, cache, callTargets(e.tool, (e as { skill?: unknown }).skill), e.agentId);
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'tool.call');
     return deny === undefined ? next(e) : { deny };

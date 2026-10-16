@@ -39,6 +39,7 @@ type Options = { env?: Record<string, string>; failRead?: string; failList?: boo
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
   const catches = new Map<string, Hook>();
+  let spawns = 0;
   const logs: string[] = [];
   const debugs: string[] = [];
   const agents: Array<{ id: string; type: string; status: string; description: string }> = [];
@@ -82,8 +83,15 @@ function engine(files: Record<string, string>, options: Options = {}) {
     sub: (id: string, type: string) => agents.push({ id, type, status: 'running', description: '' }),
     attach: (type: string, text: string, agentId?: string) =>
       call('prompt.attachment', { type, text, origin: { kind: 'engine' }, agentId }, async (e: { text: string }) => ({ text: e.text })),
-    spawn: (subagentType: string, parentAgentId?: string) =>
-      call('agent.spawn', { subagentType, parentAgentId, prompt: 'p', description: 'd' }, async () => ({ model: 'm', agentId: 'new' })),
+    // A fresh spawn is the Agent tool call's own spawn: its tool.call fires first, under the same tool_use_id.
+    spawn: async (subagentType: string, parentAgentId?: string) => {
+      const id = `spawn-${++spawns}`;
+      await call('tool.call', { tool: 'Agent', tool_use_id: id, subagent_type: subagentType, agentId: parentAgentId }, async () => RAN);
+      return call('agent.spawn', { subagentType, parentAgentId, tool_use_id: id, prompt: 'p', description: 'd' }, async () => ({ model: 'm', agentId: 'new' }));
+    },
+    // A wake resumes an agent outside any Agent tool call, under the waker's loop: absent from main.
+    resume: (subagentType: string, tool_use_id = '') =>
+      call('agent.spawn', { subagentType, tool_use_id, prompt: 'p', description: 'd' }, async () => ({ model: 'm', agentId: 'old' })),
     tool: (tool: string, input: Record<string, unknown> = {}, agentId?: string) =>
       call('tool.call', { tool, tool_use_id: 't1', ...input, agentId }, async () => RAN),
     startSession: () => call('session.start', {}, async () => ({})),
@@ -129,6 +137,16 @@ suite('agents', () => {
     expect(result.deny).toContain(`visibility.visible-to in ${ROOT}/.claude/agents/scope-child.md`);
     expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.spawn('scope-parent')).toEqual({ model: 'm', agentId: 'new' });
+  });
+
+  it('lets a wake resume an agent the waking loop may not spawn, and still refuses its fresh spawn', async () => {
+    const run = engine(SCOPED);
+    run.sub('par1', 'scope-parent');
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    // Its children finish and the engine wakes it under the main chat's loop, outside any Agent tool call.
+    expect(await run.resume('scope-child')).toEqual({ model: 'm', agentId: 'old' });
+    expect(await run.resume('scope-child', 'spawn-1')).toEqual({ model: 'm', agentId: 'old' });
+    expect((await run.spawn('scope-child')).deny).toContain('Agent type scope-child is not available to the main chat');
   });
 
   it("applies an agent's own agents block to its listing and its spawns", async () => {

@@ -2,6 +2,11 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.3.2] — 2026-10-16
+
+### Fixed
+- A resumed agent is no longer refused. Claude Code raises `agent.spawn` for a resume under the resuming loop (the main chat for a wake when an agent's children finish), so an agent hidden from that loop, such as a sub-agent only its parent type may spawn, was refused its own wake, and Claude Code dropped the notices it was woken for, stalling every parent above it. Only an Agent tool call's own spawn is now checked.
+
 ## [0.3.1] — 2026-10-15
 
 ### Changed
