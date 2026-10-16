@@ -1,4 +1,9 @@
-import { describe as suite, expect, it } from 'vitest';
+import { afterEach, describe as suite, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { register } from '../plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts';
 
 // A stand-in engine: a file system of definitions and scope files, the
@@ -24,23 +29,27 @@ const AGENTS = [
 const WITHOUT_CHILD = AGENTS.replace('- scope-child: Child. (Tools: Read)\n', '');
 
 const SKILLS = ['The following skills are available for use with the Skill tool:', '', '- greet: Greets.', '- kit:cmd: A nested command.', '- other: Other.'].join('\n');
-const MCP = ['# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## professor', 'Harvester and chats.', '', '## docs', 'Docs.'].join('\n');
-const DEFERRED = ['The following deferred tools are now available via ToolSearch:', 'WebFetch', 'mcp__professor__harvester_search_web', 'mcp__docs__read'].join('\n');
-const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__professor__harvester_search_web', 'mcp__professor__harvester_read', 'mcp__professor__chat_ls', 'mcp__docs__read', 'mcp__my__srv__read'];
+const MCP = ['# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## harvester-professor', 'Read a web page → read.', '', '## chat-professor', 'Message a chat → call.', '', '## docs', 'Docs.'].join('\n');
+const DEFERRED = ['The following deferred tools are now available via ToolSearch:', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__docs__read'].join('\n');
+const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__harvester-professor__read', 'mcp__chat-professor__ls', 'mcp__chat-professor__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
-type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string };
+type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
 
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
   const catches = new Map<string, Hook>();
+  let spawns = 0;
   const logs: string[] = [];
+  const debugs: string[] = [];
   const agents: Array<{ id: string; type: string; status: string; description: string }> = [];
   let lists = 0;
   const under = (path: string) => Object.keys(files).filter((f) => f.startsWith(`${path}/`));
   const $ = {
     env: { get: async (name: string) => (options.env ?? { HOME })[name] },
-    session: { root: async () => options.root ?? ROOT },
+    session: { root: async () => { if (options.failRoot) throw new Error('policy root unreadable'); return options.root ?? ROOT; }, id: async () => { if (options.failSessionId) throw new Error('session id unreadable'); return '5f0c2a'; } },
+    clock: { now: async () => { if (options.failClock) throw new Error('clock unreadable'); return 1791991231123; } },
+    process: { run: async (argv: readonly string[], init?: { timeoutMs?: number }) => options.runProcess ? options.runProcess(argv, init) : { exitCode: 0, stdout: '', stderr: '' } },
     fs: {
       exists: async (path: string) => path in files || under(path).length > 0,
       list: async (path: string) => {
@@ -63,26 +72,35 @@ function engine(files: Record<string, string>, options: Options = {}) {
     },
     agent: { list: async () => agents },
     tool: { list: async () => TOOLS.map((name) => ({ name, description: '' })) },
-    ui: { log: (line: string) => logs.push(line) },
+    ui: { log: (line: string, opts?: { to?: string }) => (opts?.to === 'debug' ? debugs : logs).push(line) },
   };
   (register as Hook)((name: string, fn: Hook) => (hooks.set(name, fn), { catch: (handler: Hook) => catches.set(name, handler) }), {});
   const call = (name: string, e: unknown, next: Hook) => hooks.get(name)!($, e, next);
   return {
     logs,
+    debugs,
     lists: () => lists,
     sub: (id: string, type: string) => agents.push({ id, type, status: 'running', description: '' }),
     attach: (type: string, text: string, agentId?: string) =>
       call('prompt.attachment', { type, text, origin: { kind: 'engine' }, agentId }, async (e: { text: string }) => ({ text: e.text })),
-    spawn: (subagentType: string, parentAgentId?: string) =>
-      call('agent.spawn', { subagentType, parentAgentId, prompt: 'p', description: 'd' }, async () => ({ model: 'm', agentId: 'new' })),
+    // A fresh spawn is the Agent tool call's own spawn: its tool.call fires first, under the same tool_use_id.
+    spawn: async (subagentType: string, parentAgentId?: string) => {
+      const id = `spawn-${++spawns}`;
+      await call('tool.call', { tool: 'Agent', tool_use_id: id, subagent_type: subagentType, agentId: parentAgentId }, async () => RAN);
+      return call('agent.spawn', { subagentType, parentAgentId, tool_use_id: id, prompt: 'p', description: 'd' }, async () => ({ model: 'm', agentId: 'new' }));
+    },
+    // A wake resumes an agent outside any Agent tool call, under the waker's loop: absent from main.
+    resume: (subagentType: string, tool_use_id = '') =>
+      call('agent.spawn', { subagentType, tool_use_id, prompt: 'p', description: 'd' }, async () => ({ model: 'm', agentId: 'old' })),
     tool: (tool: string, input: Record<string, unknown> = {}, agentId?: string) =>
       call('tool.call', { tool, tool_use_id: 't1', ...input, agentId }, async () => RAN),
     startSession: () => call('session.start', {}, async () => ({})),
+    endSession: () => hooks.has('session.end') ? call('session.end', {}, async () => ({})) : Promise.resolve({}),
     // The engine fires these whether or not the plugin hooks them.
     announce: async (event: 'classic.SubagentStart' | 'classic.SubagentStop', id: string, type: string) => {
       if (hooks.has(event)) await call(event, { agent_id: id, agent_type: type }, async () => ({}));
     },
-    caught: (name: string, e: unknown, next: Hook) => catches.get(name)!($, e, next),
+    caught: (name: string, e: unknown, next: Hook) => catches.get(name)!($, e, Object.assign(next, { error: { kind: 'throw', message: 'forced hook failure', budget: 100 }, called: false })),
   };
 }
 
@@ -108,7 +126,7 @@ suite('agents', () => {
     expect(await run.attach('agent_listing_delta', AGENTS, 'wf1')).toEqual({ text: WITHOUT_CHILD });
     expect((await run.spawn('scope-child', 'wf1')).deny).toContain('Agent type scope-child is not available to a general-purpose agent');
     expect(await run.spawn('scope-child', 'wf2')).toEqual({ model: 'm', agentId: 'new' });
-    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([]);
+    expect([...run.logs, ...run.debugs].filter((line) => /no agent type/.test(line))).toEqual([]);
   });
 
   it('refuses a spawn from a loop it is not visible to, naming the rule, and lets the parent through', async () => {
@@ -119,6 +137,16 @@ suite('agents', () => {
     expect(result.deny).toContain(`visibility.visible-to in ${ROOT}/.claude/agents/scope-child.md`);
     expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.spawn('scope-parent')).toEqual({ model: 'm', agentId: 'new' });
+  });
+
+  it('lets a wake resume an agent the waking loop may not spawn, and still refuses its fresh spawn', async () => {
+    const run = engine(SCOPED);
+    run.sub('par1', 'scope-parent');
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    // Its children finish and the engine wakes it under the main chat's loop, outside any Agent tool call.
+    expect(await run.resume('scope-child')).toEqual({ model: 'm', agentId: 'old' });
+    expect(await run.resume('scope-child', 'spawn-1')).toEqual({ model: 'm', agentId: 'old' });
+    expect((await run.spawn('scope-child')).deny).toContain('Agent type scope-child is not available to the main chat');
   });
 
   it("applies an agent's own agents block to its listing and its spawns", async () => {
@@ -184,24 +212,25 @@ suite('skills and commands', () => {
 
 suite('MCP', () => {
   const FILES = {
-    [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['professor/harvester_*'] } } } }),
-    [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  mcp:\n    include: [professor/harvester_search_web]\n'),
+    [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['harvester-professor/*'] } } } }),
+    [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  mcp:\n    include: [harvester-professor/search_web]\n'),
   };
 
   it('refuses an MCP tool call by the loop rules and lets an allowed one through', async () => {
     const run = engine(FILES);
     run.sub('r1', 'rr');
-    expect((await run.tool('mcp__professor__harvester_search_web', { query: 'x' })).deny).toContain(`loops.main.mcp in ${SCOPE} excludes professor/harvester_*`);
-    expect(await run.tool('mcp__professor__harvester_search_web', { query: 'x' }, 'r1')).toEqual(RAN);
-    expect((await run.tool('mcp__docs__read', {}, 'r1')).deny).toContain('admits only professor/harvester_search_web');
+    expect((await run.tool('mcp__harvester-professor__search_web', { query: 'x' })).deny).toContain(`loops.main.mcp in ${SCOPE} excludes harvester-professor/*`);
+    expect(await run.tool('mcp__harvester-professor__search_web', { query: 'x' }, 'r1')).toEqual(RAN);
+    expect((await run.tool('mcp__docs__read', {}, 'r1')).deny).toContain('admits only harvester-professor/search_web');
     expect(await run.tool('mcp__docs__read', {})).toEqual(RAN);
+    expect(await run.tool('mcp__chat-professor__call', { target: 'scratch', message: 'hello' })).toEqual(RAN);
   });
 
   it("drops a server's instructions only for a loop that may use none of its tools", async () => {
     const run = engine(FILES);
     run.sub('r1', 'rr');
-    expect(await run.attach('mcp_instructions_delta', MCP)).toEqual({ text: MCP });
-    expect(await run.attach('mcp_instructions_delta', MCP, 'r1')).toEqual({ text: MCP.replace('\n\n## docs\nDocs.', '') });
+    expect(await run.attach('mcp_instructions_delta', MCP)).toEqual({ text: MCP.replace('## harvester-professor\nRead a web page → read.\n\n', '') });
+    expect(await run.attach('mcp_instructions_delta', MCP, 'r1')).toEqual({ text: MCP.replace('\n\n## chat-professor\nMessage a chat → call.', '').replace('\n\n## docs\nDocs.', '') });
     const spaced = engine({ [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['my  srv'] } } } }) });
     expect(await spaced.attach('mcp_instructions_delta', `${MCP}\n\n## my  srv\nMine.`)).toEqual({ text: MCP });
     expect((await spaced.tool('mcp__my__srv__read', {})).deny).toContain('excludes my  srv');
@@ -210,7 +239,7 @@ suite('MCP', () => {
   it('hides MCP and built-in tools from the deferred list per loop', async () => {
     const run = engine({ ...FILES, [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  tools:\n    exclude: [WebFetch]\n') });
     run.sub('r1', 'rr');
-    expect(await run.attach('deferred_tools_delta', DEFERRED)).toEqual({ text: DEFERRED.replace('mcp__professor__harvester_search_web\n', '') });
+    expect(await run.attach('deferred_tools_delta', DEFERRED)).toEqual({ text: DEFERRED.replace('mcp__harvester-professor__search_web\n', '') });
     expect(await run.attach('deferred_tools_delta', DEFERRED, 'r1')).toEqual({ text: DEFERRED.replace('WebFetch\n', '') });
   });
 });
@@ -302,23 +331,24 @@ suite('discovery and failure', () => {
     expect(run.logs.join('\n')).toMatch(/EACCES/);
   });
 
-  it('fails open, logged, when a loop id resolves to no agent', async () => {
+  it('fails open, logged to the debug log only, when a loop id resolves to no agent', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(await run.spawn('scope-child', 'ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
-    expect(run.logs.join('\n')).toMatch(/ghost.*no agent type/);
+    expect(run.debugs.join('\n')).toMatch(/ghost.*no agent type/);
+    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([]);
   });
 
-  it('logs a loop that resolves to no agent type once, whatever its listings, spawns and calls', async () => {
+  it('debug-logs a loop that resolves to no agent type once, whatever its listings, spawns and calls', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
     for (const type of ['deferred_tools_delta', 'skill_listing', 'agent_listing_delta', 'mcp_instructions_delta']) await run.attach(type, AGENTS, 'fork1');
     await run.spawn('scope-child', 'fork1');
     await run.tool('Bash', {}, 'fork1');
     await run.tool('Bash', {}, 'fork1');
     await run.attach('agent_listing_delta', AGENTS, 'fork2');
-    expect(run.logs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
-    expect(run.logs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.debugs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.debugs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
   });
 
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {
@@ -338,4 +368,155 @@ suite('discovery and failure', () => {
     await run.attach('agent_listing_delta', AGENTS);
     expect(run.lists()).toBe(once * 2);
   });
+});
+
+const logDirs: string[] = [];
+afterEach(async () => { await Promise.all(logDirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))); });
+const logTemp = async () => { const dir = await mkdtemp(join(tmpdir(), 'visibility-logs-')); logDirs.push(dir); return dir; };
+const processExec = promisify(execFile);
+const realProcess: NonNullable<Options['runProcess']> = async (argv, init) => {
+  expect(init?.timeoutMs).toBe(5000);
+  try {
+    return { exitCode: 0, ...await processExec(argv[0]!, argv.slice(1)) };
+  } catch (error) {
+    const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
+    return { exitCode: typeof failure.code === 'number' ? failure.code : 1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? failure.message };
+  }
+};
+const logRows = async (dir: string, file: string) => {
+  const text = await readFile(join(dir, `${file}.jsonl`), 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  return text.trim() === '' ? [] : text.trim().split('\n').map((row) => JSON.parse(row));
+};
+
+suite('plugin log adapter', () => {
+  it.each(['PLUGIN_LOG_DIR', 'fallback'] as const)('writes error, warning and policy info under %s', async (source) => {
+    const dir = await logTemp();
+    const env: Record<string, string> = source === 'PLUGIN_LOG_DIR' ? { HOME: dir, PLUGIN_LOG_DIR: join(dir, 'logs') } : { HOME: dir };
+    const logs = source === 'PLUGIN_LOG_DIR' ? join(dir, 'logs/tool-visibility-controller') : join(dir, '.local/state/tool-visibility-controller/logs');
+    const opts: Options = { env, runProcess: realProcess, failRoot: true };
+    const run = engine({ ...SCOPED, [SCOPE]: '{ "loops": ' }, opts);
+    expect(await run.startSession()).toEqual({});
+    expect(await run.tool('Bash', { command: 'SECRET TOOL BODY' })).toEqual(RAN);
+    opts.failRoot = false;
+    expect(await run.tool('Bash')).toEqual(RAN);
+    expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
+    await run.endSession();
+    expect(await logRows(logs, 'errors')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'tool-visibility-controller', level: 'error', event: 'check-failed', where: 'hooks/tool-visibility-controller.ts#checkCall', session: '5f0c2a', detail: { error: 'policy root unreadable' } })]);
+    expect(await logRows(logs, 'warnings')).toEqual([expect.objectContaining({ level: 'warning', event: 'scope-problem', where: 'hooks/tool-visibility-controller.ts#readScope' })]);
+    expect(await logRows(logs, 'info')).toEqual([expect.objectContaining({ level: 'info', event: 'name-unresolved', session: '5f0c2a' })]);
+    expect(JSON.stringify(await logRows(logs, 'errors'))).not.toContain('SECRET TOOL BODY');
+    expect(run.logs.join('\n')).toContain('policy root unreadable; it goes through');
+    expect(run.logs.join('\n')).toMatch(/not valid JSON \(.*\); the file is ignored/);
+  });
+
+  it.each<{ event: string; files: Record<string, string>; options: Options; where: string; level: string }>([
+    { event: 'agent-dir-unlisted', files: SCOPED, options: { failList: true }, where: 'entriesOf', level: 'warnings' },
+    { event: 'agent-def-unreadable', files: SCOPED, options: { failRead: `${ROOT}/.claude/agents/scope-child.md` }, where: 'readOwned', level: 'warnings' },
+    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/agents/kid.md`]: md('kid', 'visibility:\n  tools:\n    include: Bash\n') }, options: {}, where: 'readOwned', level: 'warnings' },
+    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/skills/greet/SKILL.md`]: md('greet', 'visibility:\n  tools:\n    exclude: [Bash]\n') }, options: {}, where: 'readOwned', level: 'warnings' },
+    { event: 'scope-unreadable', files: { [SCOPE]: '{}' }, options: { failRead: SCOPE }, where: 'readScope', level: 'warnings' },
+    { event: 'scope-problem', files: { [SCOPE]: '{' }, options: {}, where: 'readScope', level: 'warnings' },
+    { event: 'user-tier-skipped', files: {}, options: { env: {} }, where: 'loadPolicy', level: 'warnings' },
+    { event: 'rewrite-failed', files: SCOPED, options: { failRoot: true }, where: 'rewritten', level: 'errors' },
+  ])('records $event at $where without changing the listing', async ({ event, files, options, where, level }) => {
+    const dir = await logTemp();
+    const run = engine(files, { ...options, env: { ...('env' in options ? options.env : { HOME: dir }), PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    expect(await run.attach('agent_listing_delta', AGENTS)).toEqual({ text: AGENTS });
+    await run.endSession();
+    expect(await logRows(join(dir, 'tool-visibility-controller'), level)).toContainEqual(expect.objectContaining({ event, where: `hooks/tool-visibility-controller.ts#${where}` }));
+  });
+
+  it('records one unresolved name per loop and denial rows for both call and spawn', async () => {
+    const dir = await logTemp();
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    for (let i = 0; i < 2; i++) {
+      expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
+      expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
+    }
+    expect((await run.tool('Bash')).deny).toContain('Tool Bash is not available');
+    expect((await run.spawn('scope-child')).deny).toContain('Agent type scope-child is not available');
+    await run.endSession();
+    const info = await logRows(join(dir, 'tool-visibility-controller'), 'info');
+    expect(info.map((row) => row.event)).toEqual(['name-unresolved', 'denied', 'denied']);
+    expect(info.filter((row) => row.event === 'denied').map((row) => row.where)).toEqual(['hooks/tool-visibility-controller.ts#tool.call', 'hooks/tool-visibility-controller.ts#agent.spawn']);
+  });
+
+  it.each(['classic.SubagentStart', 'classic.SubagentStop', 'agent.spawn', 'tool.call'])('logs hook-threw then continues %s', async (event) => {
+    const dir = await logTemp();
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    let called = 0;
+    expect(await run.caught(event, {}, async () => { called++; return RAN; })).toEqual(RAN);
+    expect(called).toBe(1);
+    await run.endSession();
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'errors')).toEqual([expect.objectContaining({ event: 'hook-threw', where: `hooks/tool-visibility-controller.ts#${event}`, detail: { kind: 'throw', error: 'forced hook failure' } })]);
+  });
+
+  it('keeps work unchanged, names the directory once per failure streak and re-arms after success', async () => {
+    const dir = await logTemp();
+    let failed = true;
+    const run = engine({ [SCOPE]: '{' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: async (argv, init) => { if (failed) throw new Error('cannot start'); return realProcess(argv, init); } });
+    await run.startSession();
+    expect(await run.tool('Bash')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(1);
+    expect(run.logs.find((line) => line.includes('plugin log '))).toContain(`${dir}/tool-visibility-controller`);
+    expect(run.logs.find((line) => line.includes('plugin log '))).toContain('cannot start');
+    failed = false;
+    await run.caught('tool.call', {}, async () => RAN);
+    await run.endSession();
+    failed = true;
+    await run.caught('agent.spawn', {}, async () => RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(2);
+  });
+
+  it('names the no-home failure explicitly', async () => {
+    const run = engine({}, { env: {} });
+    await run.startSession();
+    expect(await run.tool('Bash')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('plugin log off: no PLUGIN_LOG_DIR and no HOME'))).toHaveLength(1);
+  });
+
+  it('omits an unavailable session id but still writes the row and reports the metadata failure', async () => {
+    const dir = await logTemp();
+    const run = engine(SCOPED, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failSessionId: true });
+    await run.startSession();
+    await run.attach('agent_listing_delta', AGENTS, 'ghost');
+    await run.endSession();
+    const info = await logRows(join(dir, 'tool-visibility-controller'), 'info');
+    expect(info).toEqual([expect.objectContaining({ event: 'name-unresolved' })]);
+    expect(Object.keys(info[0])).not.toContain('session');
+    expect(run.logs.join('\n')).toContain('session id unreadable');
+  });
+
+  it('reports an unavailable clock without blocking policy or inventing a row timestamp', async () => {
+    const dir = await logTemp();
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, failClock: true, runProcess: realProcess });
+    await run.startSession();
+    expect(await run.caught('tool.call', {}, async () => RAN)).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs.join('\n')).toContain('clock unreadable');
+  });
+});
+
+it('starts a new session without waiting for a prior log flush, then drains policy rows from both sessions', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const dir = await logTemp();
+  const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: async (argv, init) => { await blocked; return realProcess(argv, init); } });
+  await run.startSession();
+  await run.caught('tool.call', {}, async () => RAN);
+  const second = run.startSession();
+  const outcome = await Promise.race([second.then(() => 'started'), new Promise<string>((resolve) => setImmediate(() => resolve('held by log I/O')))]);
+  release();
+  await second;
+  await run.caught('tool.call', {}, async () => RAN);
+  await run.endSession();
+  expect(outcome).toBe('started');
+  expect((await logRows(join(dir, 'tool-visibility-controller'), 'errors')).map((row) => row.event)).toEqual(['hook-threw', 'hook-threw']);
 });

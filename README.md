@@ -7,7 +7,7 @@
 **Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop**
 
 [![CI](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.2.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.2-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://code.claude.com/docs/en/plugins)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -26,7 +26,7 @@ visibility:
   visible-to:
     include: [research-lead]              # only research-lead may see and spawn this agent
   mcp:
-    include: [professor/harvester_*]      # this agent's loop sees only these MCP tools
+    include: [harvester-professor/*]      # this agent's loop sees only these MCP tools
   tools:
     exclude: [Bash]                       # and every built-in tool but Bash
 ---
@@ -105,7 +105,7 @@ visibility:
   agents:                # what THIS agent's own loop sees (agent files only)
     include: [sub-rr]
   skills:  { exclude: [deploy, ops:*] }  # skills and model-invocable commands
-  mcp:     { include: [professor/harvester_*] }   # server, or server/tool
+  mcp:     { include: [harvester-professor/*] }   # server, or server/tool
   tools:   { exclude: [WebFetch, Bash] }          # built-in tools by name
 ```
 
@@ -122,13 +122,13 @@ For what has no frontmatter you own: the main chat, built-in agents, plugin agen
 ```json
 {
   "loops": {
-    "main":    { "mcp": { "exclude": ["professor/harvester_*"] }, "agents": { "exclude": ["Explore"] } },
+    "main":    { "mcp": { "exclude": ["harvester-professor/*"] }, "agents": { "exclude": ["Explore"] } },
     "Explore": { "tools": { "exclude": ["WebFetch"] } }
   },
   "items": {
     "agents": { "Explore": { "visible-to": { "exclude": ["main"] } } },
     "skills": { "docs-kit:pdf": { "visible-to": { "include": ["writer"] } } },
-    "mcp":    { "professor/harvester_*": { "visible-to": { "exclude": ["main"] } } },
+    "mcp":    { "harvester-professor/*": { "visible-to": { "exclude": ["main"] } } },
     "tools":  {}
   }
 }
@@ -169,12 +169,19 @@ flowchart LR
 | Hook | What it does |
 | --- | --- |
 | `prompt.attachment` | Per loop, removes the entries that loop may not see from the agent listing (`agent_listing_delta`), the skill listing (`skill_listing`) and the deferred-tools notice (`deferred_tools_delta`), and drops an MCP server's block from `mcp_instructions_delta` when the loop may use none of that server's tools. The loop is the main chat, or a sub-agent whose type comes from its id: found in the session's agent list, else announced by `SubagentStart` or `SubagentStop`. Every other byte stays as it was. |
-| `agent.spawn` | Refuses the spawn of an agent type the calling loop may not use. |
+| `agent.spawn` | Refuses the spawn of an agent type the calling loop may not use. Only an Agent tool call's own spawn is checked; a resume (a wake when an agent's children finish, or a message sent to a finished agent) runs under the resuming loop, not the agent's parent, and always goes through. |
 | `tool.call` | Refuses a built-in tool, an MCP tool, or a `Skill` call naming a skill or command the calling loop may not use. |
 | `classic.SubagentStart`, `classic.SubagentStop` | Learn each sub-agent's type by its id, for an id the session's agent list does not name: a workflow's agents are never in it, so these two announcements are their only source. A teammate's announcement carries its name, so the list's type wins for any id it names. |
 | `session.start` | Forgets the rules read for the previous session. |
+| `session.end` | Drains pending plugin log writes. |
 
-It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once per loop to the debug log and the info level file, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+
+### Logs
+
+Errors, warnings and narrowly scoped info events append to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/tool-visibility-controller/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/tool-visibility-controller/logs/`. Rows identify the event, component and available session id; they never include prompt, transcript or tool-input bodies.
+
+Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes; writes run off the policy path, with a five-second process timeout; session end drains pending writes. A file over 20 MiB moves to `.1`, replacing the previous `.1`, and adds a `log-capped` warning. Concurrent cap renames are not locked. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. Existing screen and debug notices stay.
 
 ## ⚠️ Limits
 
@@ -190,7 +197,7 @@ It fails open: an unreadable file, a loop id that names no agent type (the engin
 
 ## ❓ FAQ
 
-**Does it cost anything?** Once per session, one directory listing per definitions directory and one read per definition and scope file. Per listing or call, one lookup in the session's agent list for a sub-agent's type, skipped when no rule speaks about that set. It makes no model call and no network request, and writes no file.
+**Does it cost anything?** Once per session, one directory listing per definitions directory and one read per definition and scope file. Per listing or call, one lookup in the session's agent list for a sub-agent's type, skipped when no rule speaks about that set. It makes no model call and no network request. Each nonempty plugin log flush runs one shell process per batch of at most 64 rows and appends to the level files described above.
 
 **Why not `permissions.deny`?** It blocks a tool in every loop, the parent's included, and leaves the listing as it was. This plugin hides and refuses per caller.
 

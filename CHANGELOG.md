@@ -2,7 +2,24 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [0.3.2] — 2026-10-16
+
+### Fixed
+- A resumed agent is no longer refused. Claude Code raises `agent.spawn` for a resume under the resuming loop (the main chat for a wake when an agent's children finish), so an agent hidden from that loop, such as a sub-agent only its parent type may spawn, was refused its own wake, and Claude Code dropped the notices it was woken for, stalling every parent above it. Only an Agent tool call's own spawn is now checked.
+
+## [0.3.1] — 2026-10-15
+
+### Changed
+- Plugin logs use plain create-and-append with private modes for new files; cap notices use the row truncation rule and retain the session key.
+
+## [0.3.0] — 2026-10-14
+
+### Added
+- Standalone errors, warnings and info JSONL files under `$PLUGIN_LOG_DIR/tool-visibility-controller/`, or `$HOME/.local/state/tool-visibility-controller/logs/` when unset. Rows include stable component names, optional session ids; file caps rename to `.1` and emit `log-capped` warnings.
+- Policy read/rewrite failures, ignored definitions and scope blocks, denials and the four fail-open hook catches now leave durable rows beside the existing notices. Log failures never alter policy outcomes and show one fallback notice per failing streak, re-armed after recovery.
+
+### Fixed
+- A loop that resolves to no agent type, which in practice is the engine's own fork for a compaction or for memory, printed a notice into the user's transcript each time one ran. That line now goes to the debug log alone; the loop is still left whole.
 
 ## [0.2.1] — 2026-10-12
 
