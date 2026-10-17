@@ -7,7 +7,7 @@
 **Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop**
 
 [![CI](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.2-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.3--alpha-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://code.claude.com/docs/en/plugins)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -175,13 +175,13 @@ flowchart LR
 | `session.start` | Forgets the rules read for the previous session. |
 | `session.end` | Drains pending plugin log writes. |
 
-It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each is logged once per loop to the debug log and the info level file, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each now reports an error once per loop because enforcement is skipped, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
 
 ### Logs
 
 Errors, warnings and narrowly scoped info events append to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/tool-visibility-controller/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/tool-visibility-controller/logs/`. Rows identify the event, component and available session id; they never include prompt, transcript or tool-input bodies.
 
-Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes; writes run off the policy path, with a five-second process timeout; session end drains pending writes. A file over 20 MiB moves to `.1`, replacing the previous `.1`, and adds a `log-capped` warning. Concurrent cap renames are not locked. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. Existing screen and debug notices stay.
+Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes; writes run off the policy path, with a five-second process timeout; session end drains pending writes. A file over 20 MiB moves to `.1`, replacing the previous `.1`, and adds a `log-capped` warning. Concurrent cap renames are not locked. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. Errors always appear on screen as well as in the plugin log. Warning and info diagnostics stay in the plugin log only; if no log directory can be resolved or a write fails, their messages fall back to the screen so they are not lost. The failing log's own notice stays visible. An unavailable session id is a warning (the row is still written without it); a file-cap notice is also log-only. Unreadable definitions or scope files, malformed or misplaced visibility blocks, a skipped user tier, an unresolved loop type, failed checks or rewrites, and fail-open hook catches are errors because enforcement is incomplete. Denial reasons returned to the model are deliberate product output, not diagnostics, and are unchanged.
 
 ## ⚠️ Limits
 

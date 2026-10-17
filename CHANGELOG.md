@@ -2,6 +2,12 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.3.3-alpha] — 2026-10-17
+
+### Fixed
+- Error diagnostics now always reach the screen and the plugin log, including all four fail-open hook catches. Ignored definitions, malformed or misplaced visibility blocks, unreadable scope files, skipped user tiers and unresolved loop types are errors because enforcement is incomplete.
+- Warning and info diagnostics stay off screen while the plugin log is working. Missing session metadata is a logged warning; if no log directory is resolvable or a write fails, warning and info messages fall back to the screen alongside the log failure notice. Denial reasons returned to the model are unchanged.
+
 ## [0.3.2] — 2026-10-16
 
 ### Fixed

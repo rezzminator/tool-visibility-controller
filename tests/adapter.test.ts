@@ -331,24 +331,23 @@ suite('discovery and failure', () => {
     expect(run.logs.join('\n')).toMatch(/EACCES/);
   });
 
-  it('fails open, logged to the debug log only, when a loop id resolves to no agent', async () => {
+  it('fails open with a visible error when a loop id resolves to no agent', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(await run.spawn('scope-child', 'ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
-    expect(run.debugs.join('\n')).toMatch(/ghost.*no agent type/);
-    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([]);
+    expect(run.logs.join('\n')).toMatch(/ghost.*no agent type/);
   });
 
-  it('debug-logs a loop that resolves to no agent type once, whatever its listings, spawns and calls', async () => {
+  it('shows an unresolved-loop error once, whatever its listings, spawns and calls', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
     for (const type of ['deferred_tools_delta', 'skill_listing', 'agent_listing_delta', 'mcp_instructions_delta']) await run.attach(type, AGENTS, 'fork1');
     await run.spawn('scope-child', 'fork1');
     await run.tool('Bash', {}, 'fork1');
     await run.tool('Bash', {}, 'fork1');
     await run.attach('agent_listing_delta', AGENTS, 'fork2');
-    expect(run.debugs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
-    expect(run.debugs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.logs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
+    expect(run.logs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
   });
 
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {
@@ -392,7 +391,7 @@ const logRows = async (dir: string, file: string) => {
 };
 
 suite('plugin log adapter', () => {
-  it.each(['PLUGIN_LOG_DIR', 'fallback'] as const)('writes error, warning and policy info under %s', async (source) => {
+  it.each(['PLUGIN_LOG_DIR', 'fallback'] as const)('writes enforcement errors and denial info under %s', async (source) => {
     const dir = await logTemp();
     const env: Record<string, string> = source === 'PLUGIN_LOG_DIR' ? { HOME: dir, PLUGIN_LOG_DIR: join(dir, 'logs') } : { HOME: dir };
     const logs = source === 'PLUGIN_LOG_DIR' ? join(dir, 'logs/tool-visibility-controller') : join(dir, '.local/state/tool-visibility-controller/logs');
@@ -403,23 +402,24 @@ suite('plugin log adapter', () => {
     opts.failRoot = false;
     expect(await run.tool('Bash')).toEqual(RAN);
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
+    expect((await run.spawn('scope-child')).deny).toBeDefined();
     await run.endSession();
-    expect(await logRows(logs, 'errors')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'tool-visibility-controller', level: 'error', event: 'check-failed', where: 'hooks/tool-visibility-controller.ts#checkCall', session: '5f0c2a', detail: { error: 'policy root unreadable' } })]);
-    expect(await logRows(logs, 'warnings')).toEqual([expect.objectContaining({ level: 'warning', event: 'scope-problem', where: 'hooks/tool-visibility-controller.ts#readScope' })]);
-    expect(await logRows(logs, 'info')).toEqual([expect.objectContaining({ level: 'info', event: 'name-unresolved', session: '5f0c2a' })]);
+    expect(await logRows(logs, 'errors')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'tool-visibility-controller', level: 'error', event: 'check-failed', where: 'hooks/tool-visibility-controller.ts#checkCall', session: '5f0c2a', detail: { error: 'policy root unreadable' } }), expect.objectContaining({ level: 'error', event: 'scope-problem' }), expect.objectContaining({ level: 'error', event: 'name-unresolved' })]);
+    expect(await logRows(logs, 'warnings')).toEqual([]);
+    expect(await logRows(logs, 'info')).toEqual([expect.objectContaining({ level: 'info', event: 'denied', session: '5f0c2a' })]);
     expect(JSON.stringify(await logRows(logs, 'errors'))).not.toContain('SECRET TOOL BODY');
     expect(run.logs.join('\n')).toContain('policy root unreadable; it goes through');
     expect(run.logs.join('\n')).toMatch(/not valid JSON \(.*\); the file is ignored/);
   });
 
   it.each<{ event: string; files: Record<string, string>; options: Options; where: string; level: string }>([
-    { event: 'agent-dir-unlisted', files: SCOPED, options: { failList: true }, where: 'entriesOf', level: 'warnings' },
-    { event: 'agent-def-unreadable', files: SCOPED, options: { failRead: `${ROOT}/.claude/agents/scope-child.md` }, where: 'readOwned', level: 'warnings' },
-    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/agents/kid.md`]: md('kid', 'visibility:\n  tools:\n    include: Bash\n') }, options: {}, where: 'readOwned', level: 'warnings' },
-    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/skills/greet/SKILL.md`]: md('greet', 'visibility:\n  tools:\n    exclude: [Bash]\n') }, options: {}, where: 'readOwned', level: 'warnings' },
-    { event: 'scope-unreadable', files: { [SCOPE]: '{}' }, options: { failRead: SCOPE }, where: 'readScope', level: 'warnings' },
-    { event: 'scope-problem', files: { [SCOPE]: '{' }, options: {}, where: 'readScope', level: 'warnings' },
-    { event: 'user-tier-skipped', files: {}, options: { env: {} }, where: 'loadPolicy', level: 'warnings' },
+    { event: 'agent-dir-unlisted', files: SCOPED, options: { failList: true }, where: 'entriesOf', level: 'errors' },
+    { event: 'agent-def-unreadable', files: SCOPED, options: { failRead: `${ROOT}/.claude/agents/scope-child.md` }, where: 'readOwned', level: 'errors' },
+    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/agents/kid.md`]: md('kid', 'visibility:\n  tools:\n    include: Bash\n') }, options: {}, where: 'readOwned', level: 'errors' },
+    { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/skills/greet/SKILL.md`]: md('greet', 'visibility:\n  tools:\n    exclude: [Bash]\n') }, options: {}, where: 'readOwned', level: 'errors' },
+    { event: 'scope-unreadable', files: { [SCOPE]: '{}' }, options: { failRead: SCOPE }, where: 'readScope', level: 'errors' },
+    { event: 'scope-problem', files: { [SCOPE]: '{' }, options: {}, where: 'readScope', level: 'errors' },
+    { event: 'user-tier-skipped', files: {}, options: { env: {} }, where: 'loadPolicy', level: 'errors' },
     { event: 'rewrite-failed', files: SCOPED, options: { failRoot: true }, where: 'rewritten', level: 'errors' },
   ])('records $event at $where without changing the listing', async ({ event, files, options, where, level }) => {
     const dir = await logTemp();
@@ -441,7 +441,10 @@ suite('plugin log adapter', () => {
     expect((await run.spawn('scope-child')).deny).toContain('Agent type scope-child is not available');
     await run.endSession();
     const info = await logRows(join(dir, 'tool-visibility-controller'), 'info');
-    expect(info.map((row) => row.event)).toEqual(['name-unresolved', 'denied', 'denied']);
+    expect(info.map((row) => row.event)).toEqual(['denied', 'denied']);
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'errors')).toEqual([expect.objectContaining({ level: 'error', event: 'name-unresolved' })]);
+    expect(run.logs.filter((line) => /no agent type/.test(line))).toHaveLength(1);
+    expect(run.logs.some((line) => /is not available/.test(line))).toBe(false);
     expect(info.filter((row) => row.event === 'denied').map((row) => row.where)).toEqual(['hooks/tool-visibility-controller.ts#tool.call', 'hooks/tool-visibility-controller.ts#agent.spawn']);
   });
 
@@ -451,6 +454,7 @@ suite('plugin log adapter', () => {
     let called = 0;
     expect(await run.caught(event, {}, async () => { called++; return RAN; })).toEqual(RAN);
     expect(called).toBe(1);
+    expect(run.logs.join('\n')).toContain(`${event} failed; proceeding unchecked`);
     await run.endSession();
     expect(await logRows(join(dir, 'tool-visibility-controller'), 'errors')).toEqual([expect.objectContaining({ event: 'hook-threw', where: `hooks/tool-visibility-controller.ts#${event}`, detail: { kind: 'throw', error: 'forced hook failure' } })]);
   });
@@ -482,16 +486,17 @@ suite('plugin log adapter', () => {
     expect(run.logs.filter((line) => line.includes('plugin log off: no PLUGIN_LOG_DIR and no HOME'))).toHaveLength(1);
   });
 
-  it('omits an unavailable session id but still writes the row and reports the metadata failure', async () => {
+  it('keeps a session-id warning off screen with the log active', async () => {
     const dir = await logTemp();
     const run = engine(SCOPED, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failSessionId: true });
     await run.startSession();
-    await run.attach('agent_listing_delta', AGENTS, 'ghost');
+    expect((await run.spawn('scope-child')).deny).toBeDefined();
     await run.endSession();
     const info = await logRows(join(dir, 'tool-visibility-controller'), 'info');
-    expect(info).toEqual([expect.objectContaining({ event: 'name-unresolved' })]);
+    expect(info).toEqual([expect.objectContaining({ event: 'denied' })]);
     expect(Object.keys(info[0])).not.toContain('session');
-    expect(run.logs.join('\n')).toContain('session id unreadable');
+    expect(run.logs).toEqual([]);
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'warnings')).toEqual([expect.objectContaining({ level: 'warning', event: 'log-session-unavailable', msg: expect.stringContaining('session id unreadable') })]);
   });
 
   it('reports an unavailable clock without blocking policy or inventing a row timestamp', async () => {

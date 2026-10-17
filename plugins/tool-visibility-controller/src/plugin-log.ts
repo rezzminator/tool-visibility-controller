@@ -118,6 +118,25 @@ export class PluginLogQueue {
 
   add(row: string): void { this.rows.push(row); }
 
+  private show(text: string): void {
+    try { this.notice(text); } catch {
+      // No other screen door exists, and logging must not alter policy.
+    }
+  }
+
+  private dropped(rows: readonly string[]): FlushResult {
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row) as LevelFields;
+        // Errors already reached the screen synchronously in the adapter.
+        if (parsed.level !== 'error') this.show(parsed.msg);
+      } catch (error) {
+        this.show(`plugin log fallback: ${error instanceof Error ? error.message : String(error)}; row: ${row}`);
+      }
+    }
+    return { written: 0, dropped: rows.length };
+  }
+
   private failure(error: unknown, dropped: number): void {
     if (this.failing) return;
     this.failing = true;
@@ -125,10 +144,7 @@ export class PluginLogQueue {
     const text = this.dir === undefined
       ? 'plugin log off: no PLUGIN_LOG_DIR and no HOME'
       : `plugin log ${this.dir}: ${cause}; dropped ${dropped} row(s)`;
-    try { this.notice(text); } catch {
-      // The last-resort screen door can itself be unavailable. Its failure
-      // must not escape into the policy result, and no other I/O door exists.
-    }
+    this.show(text);
   }
 
   flush(run: ProcessRun | undefined): Promise<FlushResult> {
@@ -138,12 +154,12 @@ export class PluginLogQueue {
       if (rows.length === 0) return result;
       if (this.dir === undefined) {
         this.failure('no directory', rows.length);
-        return { written: 0, dropped: rows.length };
+        return this.dropped(rows);
       }
       let commands: string[][];
       try { commands = appendArgv(this.dir, this.plugin, rows); } catch (error) {
         this.failure(error, rows.length);
-        return { written: 0, dropped: rows.length };
+        return this.dropped(rows);
       }
       for (const argv of commands) {
         const count = (argv.length - 6) / 3;
@@ -155,7 +171,8 @@ export class PluginLogQueue {
           result.written += count;
         } catch (error) {
           this.failure(error, count);
-          result.dropped += count;
+          const start = result.written + result.dropped;
+          result.dropped += this.dropped(rows.slice(start, start + count)).dropped;
         }
       }
       return result;

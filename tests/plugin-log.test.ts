@@ -206,6 +206,19 @@ describe('plugin log queue', () => {
     expect(notices).toHaveLength(2);
   });
 
+  it.each(['no directory', 'write failure'] as const)('shows every warning and info diagnostic when there is %s', async (failure) => {
+    const { PluginLogQueue, levelRow } = await writer();
+    const notices: string[] = [];
+    const queue = new PluginLogQueue(failure === 'no directory' ? undefined : '/x/logs', PLUGIN, (text) => notices.push(text));
+    for (const level of ['warning', 'info'] as const) {
+      queue.add(levelRow({ ...fields, level, msg: `${level} must not vanish` }, NOW));
+      expect(await queue.flush(async () => ({ exitCode: 1, stdout: '', stderr: 'disk full' }))).toEqual({ written: 0, dropped: 1 });
+    }
+    expect(notices.filter((line) => line.includes('plugin log '))).toHaveLength(1);
+    expect(notices).toContain('warning must not vanish');
+    expect(notices).toContain('info must not vanish');
+  });
+
   it('reports no-home explicitly without throwing even when the fallback itself throws', async () => {
     const { PluginLogQueue, levelRow } = await writer();
     const notices: string[] = [];
