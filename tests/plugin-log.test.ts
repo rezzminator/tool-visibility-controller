@@ -206,6 +206,38 @@ describe('plugin log queue', () => {
     expect(notices).toHaveLength(2);
   });
 
+  it('retains a failed batch for the next flush, in order, and drops it only on a final flush', async () => {
+    const { PluginLogQueue, levelRow } = await writer();
+    const notices: string[] = [];
+    const queue = new PluginLogQueue('/x/logs', PLUGIN, (text) => notices.push(text));
+    const row = (n: number) => levelRow({ ...fields, level: 'warning', msg: `row ${n}` }, NOW);
+    const written: string[] = [];
+    const good = async (argv: readonly string[]) => { for (let i = 6; i < argv.length; i += 3) written.push(JSON.parse(argv[i + 1]!).msg); return { exitCode: 0, stdout: '', stderr: '' }; };
+    const down = async () => { throw new Error('worker stalled'); };
+    queue.add(row(1)); queue.add(row(2));
+    expect(await queue.flush(down, { retain: true })).toEqual({ written: 0, dropped: 0, retained: 2 });
+    queue.add(row(3));
+    expect(await queue.flush(down, { retain: true })).toEqual({ written: 0, dropped: 0, retained: 3 });
+    expect(notices.filter((line) => line.includes('plugin log '))).toHaveLength(1);
+    expect(notices).not.toContain('row 1');
+    expect(await queue.flush(good, { retain: true })).toEqual({ written: 3, dropped: 0 });
+    expect(written).toEqual(['row 1', 'row 2', 'row 3']);
+    queue.add(row(4));
+    expect(await queue.flush(down, { retain: true })).toEqual({ written: 0, dropped: 0, retained: 1 });
+    expect(await queue.flush(down)).toEqual({ written: 0, dropped: 1 });
+    expect(notices).toContain('row 4');
+  });
+
+  it('bounds the retained rows and drops the oldest first', async () => {
+    const { PluginLogQueue, levelRow, MAX_RETAINED_ROWS } = await writer();
+    const notices: string[] = [];
+    const queue = new PluginLogQueue('/x/logs', PLUGIN, (text) => notices.push(text));
+    for (let i = 0; i < MAX_RETAINED_ROWS + 5; i++) queue.add(levelRow({ ...fields, level: 'warning', msg: `row ${i}` }, NOW));
+    const down = async () => { throw new Error('worker stalled'); };
+    expect(await queue.flush(down, { retain: true })).toEqual({ written: 0, dropped: 5, retained: MAX_RETAINED_ROWS });
+    expect(notices.filter((line) => /^row \d+$/.test(line))).toEqual([0, 1, 2, 3, 4].map((i) => `row ${i}`));
+  });
+
   it.each(['no directory', 'write failure'] as const)('shows every warning and info diagnostic when there is %s', async (failure) => {
     const { PluginLogQueue, levelRow } = await writer();
     const notices: string[] = [];

@@ -2,6 +2,12 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.3.4-alpha] — 2026-10-18
+
+### Fixed
+- A burst of identical diagnostics no longer floods the screen. When the hooks worker stalls, every tool call used to print `tool.call failed; proceeding unchecked`; now the first line shows, the repeats are counted, and one `(and N more)` line follows once the burst ends (and every 30 seconds while it lasts, and at session end). Every row is still written to `errors.jsonl`.
+- No log row is dropped to a transient failure. A row now waits for the next write when the engine clock, the environment or `process.run` is briefly unreachable (a stalled hooks worker): the clock falls back to local time, a failed batch is kept in order (at most 1000 rows) and written with the next row or at session end. Only the final write at session end or start gives a row up, with the usual screen fallback. A write that timed out after it succeeded can leave a duplicate row, never a missing one.
+
 ## [0.3.3-alpha] — 2026-10-17
 
 ### Fixed

@@ -14,7 +14,10 @@ export type LevelFields = {
 };
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string };
 export type ProcessRun = (argv: readonly string[]) => Promise<ProcessResult>;
-export type FlushResult = { written: number; dropped: number };
+/** `retained` rows stay queued for the next flush; it is absent when none do. */
+export type FlushResult = { written: number; dropped: number; retained?: number };
+/** Rows a failing log may hold for retry; past it the oldest are dropped. */
+export const MAX_RETAINED_ROWS = 1000;
 const FILES: Record<Level, string> = { error: 'errors.jsonl', warning: 'warnings.jsonl', info: 'info.jsonl' };
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 
@@ -147,7 +150,8 @@ export class PluginLogQueue {
     this.show(text);
   }
 
-  flush(run: ProcessRun | undefined): Promise<FlushResult> {
+  /** With `retain`, a batch a reachable `process.run` failed on waits in front of the queue for the next flush instead of being dropped. */
+  flush(run: ProcessRun | undefined, options: { retain?: boolean } = {}): Promise<FlushResult> {
     const rows = this.rows.splice(0);
     const task = this.chain.then(async () => {
       const result: FlushResult = { written: 0, dropped: 0 };
@@ -161,8 +165,12 @@ export class PluginLogQueue {
         this.failure(error, rows.length);
         return this.dropped(rows);
       }
+      let kept: string[] = [];
+      let start = 0;
       for (const argv of commands) {
         const count = (argv.length - 6) / 3;
+        const batch = rows.slice(start, start + count);
+        start += count;
         try {
           if (!run) throw new Error('process.run is unavailable');
           const response = await run(argv);
@@ -171,9 +179,15 @@ export class PluginLogQueue {
           result.written += count;
         } catch (error) {
           this.failure(error, count);
-          const start = result.written + result.dropped;
-          result.dropped += this.dropped(rows.slice(start, start + count)).dropped;
+          if (options.retain && run) kept = kept.concat(batch);
+          else result.dropped += this.dropped(batch).dropped;
         }
+      }
+      if (kept.length > 0) {
+        const over = Math.max(0, kept.length + this.rows.length - MAX_RETAINED_ROWS);
+        result.dropped += this.dropped(kept.slice(0, over)).dropped;
+        this.rows = kept.slice(over).concat(this.rows);
+        result.retained = kept.length - over;
       }
       return result;
     });

@@ -34,7 +34,7 @@ const DEFERRED = ['The following deferred tools are now available via ToolSearch
 const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__harvester-professor__read', 'mcp__chat-professor__ls', 'mcp__chat-professor__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
-type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
+type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
 
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
@@ -42,13 +42,14 @@ function engine(files: Record<string, string>, options: Options = {}) {
   let spawns = 0;
   const logs: string[] = [];
   const debugs: string[] = [];
+  const timers: Array<() => void> = [];
   const agents: Array<{ id: string; type: string; status: string; description: string }> = [];
   let lists = 0;
   const under = (path: string) => Object.keys(files).filter((f) => f.startsWith(`${path}/`));
   const $ = {
-    env: { get: async (name: string) => (options.env ?? { HOME })[name] },
+    env: { get: async (name: string) => { if (options.failEnv) throw new Error('env unreadable'); return (options.env ?? { HOME })[name]; } },
     session: { root: async () => { if (options.failRoot) throw new Error('policy root unreadable'); return options.root ?? ROOT; }, id: async () => { if (options.failSessionId) throw new Error('session id unreadable'); return '5f0c2a'; } },
-    clock: { now: async () => { if (options.failClock) throw new Error('clock unreadable'); return 1791991231123; } },
+    clock: { now: async () => { if (options.failClock) throw new Error('clock unreadable'); return 1791991231123; }, after: (_ms: number, fn: () => void) => { timers.push(fn); return { cancel: () => {} }; } },
     process: { run: async (argv: readonly string[], init?: { timeoutMs?: number }) => options.runProcess ? options.runProcess(argv, init) : { exitCode: 0, stdout: '', stderr: '' } },
     fs: {
       exists: async (path: string) => path in files || under(path).length > 0,
@@ -79,6 +80,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
   return {
     logs,
     debugs,
+    fireTimers: () => timers.splice(0).forEach((fn) => fn()),
     lists: () => lists,
     sub: (id: string, type: string) => agents.push({ id, type, status: 'running', description: '' }),
     attach: (type: string, text: string, agentId?: string) =>
@@ -499,13 +501,58 @@ suite('plugin log adapter', () => {
     expect(await logRows(join(dir, 'tool-visibility-controller'), 'warnings')).toEqual([expect.objectContaining({ level: 'warning', event: 'log-session-unavailable', msg: expect.stringContaining('session id unreadable') })]);
   });
 
-  it('reports an unavailable clock without blocking policy or inventing a row timestamp', async () => {
+  it('stamps a row with the local time and keeps it when the engine clock is unavailable', async () => {
     const dir = await logTemp();
     const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, failClock: true, runProcess: realProcess });
     await run.startSession();
+    const before = Date.now();
     expect(await run.caught('tool.call', {}, async () => RAN)).toEqual(RAN);
     await run.endSession();
     expect(run.logs.join('\n')).toContain('clock unreadable');
+    const rows = await logRows(join(dir, 'tool-visibility-controller'), 'errors');
+    expect(rows).toEqual([expect.objectContaining({ event: 'hook-threw' })]);
+    expect(Date.parse(rows[0].ts)).toBeGreaterThanOrEqual(before);
+  });
+
+  it('keeps a row whose logger setup fails and writes it once the setup recovers', async () => {
+    const dir = await logTemp();
+    const opts: Options = { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, failEnv: true, runProcess: realProcess };
+    const run = engine({}, opts);
+    await run.startSession();
+    await run.caught('tool.call', {}, async () => RAN);
+    await new Promise((resolve) => setImmediate(resolve));
+    opts.failEnv = false;
+    await run.caught('agent.spawn', {}, async () => RAN);
+    await run.endSession();
+    expect((await logRows(join(dir, 'tool-visibility-controller'), 'errors')).map((row) => row.where)).toEqual(['hooks/tool-visibility-controller.ts#tool.call', 'hooks/tool-visibility-controller.ts#agent.spawn']);
+  });
+
+  it('shows a burst of identical hook failures once with a summary, and every row still lands in errors.jsonl', async () => {
+    const dir = await logTemp();
+    let stalled = 3;
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: async (argv, init) => { if (stalled-- > 0) throw new Error('hooks worker stalled'); return realProcess(argv, init); } });
+    await run.startSession();
+    for (let i = 0; i < 17; i++) {
+      expect(await run.caught('tool.call', {}, async () => RAN)).toEqual(RAN);
+      if (i % 3 === 2) await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(run.logs.filter((line) => line.includes('tool.call failed; proceeding unchecked'))).toHaveLength(1);
+    run.fireTimers();
+    expect(run.logs.filter((line) => line.includes('tool.call failed; proceeding unchecked'))).toEqual([expect.not.stringContaining('more'), expect.stringContaining('(and 16 more)')]);
+    await run.endSession();
+    const rows = await logRows(join(dir, 'tool-visibility-controller'), 'errors');
+    expect(rows).toHaveLength(17);
+    expect(new Set(rows.map((row) => row.event))).toEqual(new Set(['hook-threw']));
+    expect(run.logs.filter((line) => line.includes('plugin log ')).length).toBeLessThanOrEqual(1);
+  });
+
+  it('flushes the pending burst summary when the session ends', async () => {
+    const dir = await logTemp();
+    const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    for (let i = 0; i < 3; i++) await run.caught('agent.spawn', {}, async () => RAN);
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes('agent.spawn failed'))).toEqual([expect.not.stringContaining('more'), expect.stringContaining('(and 2 more)')]);
   });
 });
 
