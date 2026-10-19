@@ -7,7 +7,7 @@
 **Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop**
 
 [![CI](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.4--alpha-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.5--alpha-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://code.claude.com/docs/en/plugins)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -54,7 +54,7 @@ Agent type researcher is not available to the main chat: visibility.visible-to i
 - **Parent → child chains keep working.** `permissions.deny` blocks a tool in every loop, the orchestrator included. Here the rule is per caller: `research-lead` spawns `researcher`, the main chat cannot.
 - **Things you do not own are covered too.** Built-in agents (`Explore`), plugin agents and skills, MCP servers and built-in tools take their rules from a scope file, `tool-visibility-controller.json`.
 - **Every other loop's context gets lighter, and the prompt cache holds.** A hidden entry leaves the listing; every other byte stays identical.
-- **It never blocks your work by accident.** Any error is logged and the listing, the call and the spawn go on as they were.
+- **It never blocks your work by accident.** Any error is logged and the listing, the call and the spawn go on as they were; a loop or hook failure that leaves an action unchecked says which action went unchecked.
 
 ## 🚀 Quick start
 
@@ -141,7 +141,7 @@ For what has no frontmatter you own: the main chat, built-in agents, plugin agen
 
 A loop may see and invoke an item only when every rule agrees: the item's `visible-to` admits the loop, the loop's own block for that set admits the item, and the scope file admits both. Any one says no, and the item is hidden from that loop and its call refused.
 
-- Definitions are read from `$CLAUDE_CONFIG_DIR` (else `~/.claude`) and from `.claude/` in the session's directory and each directory above it, below your home directory as Claude Code reads them; the nearest definition of a name wins, so a project copy without `visibility` lifts the user copy's rules there.
+- Definitions are read from `$CLAUDE_CONFIG_DIR` (else `~/.claude`) and from `.claude/` in the session's directory and each directory above it, below your home directory as Claude Code reads them; the nearest definition of a name wins, so a project copy without `visibility` lifts the user copy's rules there. A definition that is missing (`ENOENT`) is skipped, never read as an empty definition, so it cannot override a farther valid one; the skip is logged once per path in the session and every other definition still loads. A definition that exists but cannot be read keeps the nearest-tier behavior and is reported as an error.
 - Everything is read once per session. Start a new session after an edit.
 - A malformed block (a scalar where a list belongs, an unknown key, an unclosed list, a key given twice) is logged with its file and the reason, and only that block is ignored.
 
@@ -175,7 +175,9 @@ flowchart LR
 | `session.start` | Forgets the rules read for the previous session. |
 | `session.end` | Drains pending plugin log writes. |
 
-It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each now reports an error once per loop because enforcement is skipped, however many listings and calls it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each reports one diagnostic per loop, however many listings, calls and spawns it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+
+When the loop's identity is unresolved, the diagnostic names the action that could not be checked (a listing, a call or a spawn) and how to recover: make the loop's type known through the session's agent list or a `SubagentStart` announcement. A hook that throws shows on screen the hook name, the kind and reason of the failure, the item or loop it concerned and the unchecked fallback that ran. Fail-open is a deliberate choice, not fail-closed enforcement: an unchecked action runs.
 
 ### Logs
 

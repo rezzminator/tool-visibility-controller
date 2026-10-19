@@ -2,6 +2,7 @@ import type { EngineInterface, On, Register } from 'claude-code';
 import { levelRow, MAX_RETAINED_ROWS, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
 import { BURST_WINDOW_MS, ScreenBurst } from '../src/screen-burst.ts';
 import { AgentTypes } from '../src/agent-types.ts';
+import { hookFailureText, message, missingDefinition, unresolvedLoopText } from '../src/failures.ts';
 import { SpawnCalls } from '../src/spawns.ts';
 import { filterDeferredTools, filterEntries, filterMcpInstructions } from '../src/listings.ts';
 import {
@@ -35,13 +36,9 @@ const COMMAND_DEPTH = 3;
 type Logger = { queue: PluginLogQueue; session?: string; warning?: string };
 type Pending = { level: Level; event: string; msg: string; hook: string; detail?: Record<string, unknown>; at: number };
 type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean; pending: Pending[] };
-type Cache = { policy?: Promise<Policy>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; burst: ScreenBurst; burstArmed: boolean };
+type Cache = { policy?: Promise<Policy>; missing: Set<string>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; burst: ScreenBurst; burstArmed: boolean };
 type Entry = { name: string; kind: string; isLink?: boolean };
 type Read = { name: string; owned: Owned | null };
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 const PLUGIN = 'tool-visibility-controller';
 
@@ -151,13 +148,20 @@ async function entriesOf($: EngineInterface, cache: Cache, dir: string): Promise
   }
 }
 
-// One definition file. Unreadable, it is logged and still stands for its name
-// with no rule, so it overrides a farther definition as Claude Code's does.
-async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'agents' | 'skills', fallback: string, byPath: boolean): Promise<Read> {
+// A missing definition is skipped; it must not mask a farther valid one.
+// Other unreadable files still stand for their name with no rule, as before.
+async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'agents' | 'skills', fallback: string, byPath: boolean): Promise<Read | null> {
   let text: string;
   try {
     text = await $.fs.read(path);
   } catch (error) {
+    if (missingDefinition(error)) {
+      if (!cache.missing.has(path)) {
+        cache.missing.add(path);
+        plog($, cache, 'error', 'agent-def-missing', `tool-visibility-controller: reading ${path} failed: ${message(error)}; definition is skipped; other definitions are still read`, 'readOwned', { error: message(error), path });
+      }
+      return null;
+    }
     plog($, cache, 'error', 'agent-def-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; ${fallback} has no visibility rule`, 'readOwned', { error: message(error), path });
     return { name: fallback, owned: null };
   }
@@ -180,7 +184,8 @@ async function readAgents($: EngineInterface, cache: Cache, dir: string): Promis
   const read: Read[] = [];
   for (const entry of await entriesOf($, cache, dir)) {
     if (!entry.name.endsWith('.md') || entry.kind === 'dir') continue;
-    read.push(await readOwned($, cache, `${dir}/${entry.name}`, 'agents', entry.name.slice(0, -3), false));
+    const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'agents', entry.name.slice(0, -3), false);
+    if (definition !== null) read.push(definition);
   }
   return read;
 }
@@ -190,7 +195,10 @@ async function readSkills($: EngineInterface, cache: Cache, dir: string): Promis
   for (const entry of await entriesOf($, cache, dir)) {
     if (entry.kind === 'file') continue;
     const path = `${dir}/${entry.name}/SKILL.md`;
-    if (await $.fs.exists(path)) read.push(await readOwned($, cache, path, 'skills', entry.name, false));
+    if (await $.fs.exists(path)) {
+      const definition = await readOwned($, cache, path, 'skills', entry.name, false);
+      if (definition !== null) read.push(definition);
+    }
   }
   return read;
 }
@@ -200,7 +208,8 @@ async function readCommands($: EngineInterface, cache: Cache, dir: string, prefi
   const read: Read[] = [];
   for (const entry of await entriesOf($, cache, dir)) {
     if (entry.name.endsWith('.md') && entry.kind !== 'dir') {
-      read.push(await readOwned($, cache, `${dir}/${entry.name}`, 'skills', `${prefix}${entry.name.slice(0, -3)}`, true));
+      const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'skills', `${prefix}${entry.name.slice(0, -3)}`, true);
+      if (definition !== null) read.push(definition);
     } else if (depth < COMMAND_DEPTH && (entry.kind === 'dir' || entry.isLink === true)) {
       read.push(...(await readCommands($, cache, `${dir}/${entry.name}`, `${prefix}${entry.name}:`, depth + 1)));
     }
@@ -271,10 +280,9 @@ async function loopType($: EngineInterface, cache: Cache, agentId: string | unde
 // A loop with no type is reported once, not at every listing and every call:
 // the engine's own forks (compaction, memory) send a listing of each kind.
 // Enforcement is skipped, so this is an error even for an engine-owned fork.
-function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined): void {
+function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined, action: string): void {
   if (!cache.types.firstMiss(String(agentId))) return;
-  const msg = `tool-visibility-controller: loop ${String(agentId)} resolves to no agent type (no agent list names it and no SubagentStart announced it); its listings, spawns and tool calls are left whole`;
-  plog($, cache, 'error', 'name-unresolved', msg, 'logUnresolved', { agentId });
+  plog($, cache, 'error', 'name-unresolved', unresolvedLoopText(String(agentId), action), 'logUnresolved', { agentId, action });
 }
 
 function hider(policy: Policy, set: SetName, loop: string): (name: string) => boolean {
@@ -287,7 +295,7 @@ async function rewritten($: EngineInterface, cache: Cache, type: string, text: s
     if (isEmpty(policy)) return text;
     const loop = await loopType($, cache, agentId);
     if (loop === undefined) {
-      logUnresolved($, cache, agentId);
+      logUnresolved($, cache, agentId, `rewriting ${type}`);
       return text;
     }
     if (type === 'agent_listing_delta') return hasRules(policy, 'agents') ? filterEntries(text, hider(policy, 'agents', loop), 'agents') : text;
@@ -320,7 +328,7 @@ async function checkCall($: EngineInterface, cache: Cache, targets: ReadonlyArra
     if (relevant.length === 0) return undefined;
     const loop = await loopType($, cache, agentId);
     if (loop === undefined) {
-      logUnresolved($, cache, agentId);
+      logUnresolved($, cache, agentId, `checking ${what}`);
       return undefined;
     }
     for (const [set, item] of relevant) {
@@ -342,10 +350,11 @@ function callTargets(tool: string, skill: unknown): Array<[SetName, string]> {
 }
 
 export const register: Register = (on: On) => {
-  const cache: Cache = { types: new AgentTypes(), spawns: new SpawnCalls(), log: { work: Promise.resolve(), failing: false, pending: [] }, logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false };
+  const cache: Cache = { missing: new Set(), types: new AgentTypes(), spawns: new SpawnCalls(), log: { work: Promise.resolve(), failing: false, pending: [] }, logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false };
 
   on('session.start', async ($, e, next) => {
     cache.policy = undefined;
+    cache.missing.clear();
     cache.logDrain = Promise.all([cache.logDrain, finishLog($, cache, cache.log)]).then(() => {});
     cache.log = { work: Promise.resolve(), failing: false, pending: [] };
     return next(e);
@@ -362,7 +371,7 @@ export const register: Register = (on: On) => {
     cache.types.learn(e.agent_id, e.agent_type);
     return next(e);
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `classic.SubagentStart failed; proceeding unchecked`, 'classic.SubagentStart', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('classic.SubagentStart', next.error, `agent ${e.agent_id}, type ${e.agent_type}`), 'classic.SubagentStart', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 
@@ -370,7 +379,7 @@ export const register: Register = (on: On) => {
     cache.types.learn(e.agent_id, e.agent_type);
     return next(e);
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `classic.SubagentStop failed; proceeding unchecked`, 'classic.SubagentStop', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('classic.SubagentStop', next.error, `agent ${e.agent_id}, type ${e.agent_type}`), 'classic.SubagentStop', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 
@@ -379,6 +388,9 @@ export const register: Register = (on: On) => {
     if (!LISTINGS.has(e.type) || result.text === null) return result;
     const text = await rewritten($, cache, e.type, result.text, e.agentId);
     return text === result.text ? result : { ...result, text };
+  }).catch(($, e, next) => {
+    plog($, cache, 'error', 'hook-threw', hookFailureText('prompt.attachment', next.error, `listing ${e.type}, loop ${e.agentId ?? MAIN}`), 'prompt.attachment', { kind: next.error.kind, error: next.error.message });
+    return next(e);
   });
 
   // A hook that throws or overruns its budget lets the spawn through.
@@ -389,7 +401,7 @@ export const register: Register = (on: On) => {
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'agent.spawn');
     return deny === undefined ? next(e) : { deny };
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `agent.spawn failed; proceeding unchecked`, 'agent.spawn', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('agent.spawn', next.error, `agent ${e.subagentType}, loop ${e.parentAgentId ?? MAIN}`), 'agent.spawn', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 
@@ -400,7 +412,7 @@ export const register: Register = (on: On) => {
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'tool.call');
     return deny === undefined ? next(e) : { deny };
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `tool.call failed; proceeding unchecked`, 'tool.call', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('tool.call', next.error, `tool ${e.tool}, loop ${e.agentId ?? MAIN}`), 'tool.call', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 };

@@ -34,7 +34,7 @@ const DEFERRED = ['The following deferred tools are now available via ToolSearch
 const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__harvester-professor__read', 'mcp__chat-professor__ls', 'mcp__chat-professor__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
-type Options = { env?: Record<string, string>; failRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
+type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
 
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
@@ -66,6 +66,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
       },
       read: async (path: string) => {
         if (path === options.failRead) throw new Error(`EACCES: permission denied, open '${path}'`);
+        if (path === options.missingRead) throw new Error(`ENOENT: no such file or directory, open '${path}'`);
         const text = files[path];
         if (text === undefined) throw new Error(`ENOENT: ${path}`);
         return text;
@@ -102,7 +103,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
     announce: async (event: 'classic.SubagentStart' | 'classic.SubagentStop', id: string, type: string) => {
       if (hooks.has(event)) await call(event, { agent_id: id, agent_type: type }, async () => ({}));
     },
-    caught: (name: string, e: unknown, next: Hook) => catches.get(name)!($, e, Object.assign(next, { error: { kind: 'throw', message: 'forced hook failure', budget: 100 }, called: false })),
+    caught: (name: string, e: unknown, next: Hook, failure: { kind: 'throw' | 'timeout'; message?: string } = { kind: 'throw', message: 'forced hook failure' }) => catches.get(name)!($, e, Object.assign(next, { error: { ...failure, budget: 100 }, called: false })),
   };
 }
 
@@ -327,6 +328,91 @@ suite('discovery and failure', () => {
     expect(run.logs.join('\n')).toMatch(/kid\.md.*EACCES/);
   });
 
+  it('skips a missing definition without masking a farther rule or staling the rest of the inventory', async () => {
+    const path = `${ROOT}/.claude/agents/kid.md`;
+    const files = {
+      [`${HOME}/.claude/agents/kid.md`]: md('kid', 'visibility:\n  visible-to:\n    include: [boss]\n'),
+      [path]: md('kid'),
+      ...SCOPED,
+    };
+    const run = engine(files, { missingRead: path });
+    expect((await run.spawn('kid')).deny).toContain('admits only boss');
+    expect(await run.attach('agent_listing_delta', AGENTS)).toEqual({ text: WITHOUT_CHILD });
+    expect((await run.spawn('scope-child')).deny).toContain('scope-parent');
+    expect(run.logs.filter((line) => line.includes(path))).toEqual([
+      expect.stringMatching(/ENOENT.*definition is skipped/),
+    ]);
+  });
+
+  it('reports a missing path once even across duplicate tiers, and reads a restored definition in the next session', async () => {
+    const path = `${ROOT}/.claude/agents/kid.md`;
+    const opts: Options = { env: { HOME, CLAUDE_CONFIG_DIR: `${ROOT}/.claude` }, missingRead: path };
+    const run = engine({ [path]: md('kid', 'visibility:\n  visible-to:\n    include: [boss]\n'), ...SCOPED }, opts);
+    expect(await run.spawn('kid')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.logs.filter((line) => line.includes(path))).toHaveLength(1);
+    opts.missingRead = undefined;
+    await run.startSession();
+    expect((await run.spawn('kid')).deny).toContain('admits only boss');
+    opts.missingRead = path;
+    await run.startSession();
+    expect(await run.spawn('kid')).toEqual({ model: 'm', agentId: 'new' });
+    // The later session's identical line is retained by the existing burst coalescer.
+    await run.endSession();
+    expect(run.logs.filter((line) => line.includes(path))).toHaveLength(2);
+  });
+
+  it.each([
+    ['agents/kid.md', 'agents/kid.md', 'kid'],
+    ['commands/greet.md', 'commands/greet.md', 'greet'],
+    ['skills/greet/SKILL.md', 'skills/greet/SKILL.md', 'greet'],
+  ])('skips a missing %s without masking the farther visibility rule', async (near, far, name) => {
+    const path = `${ROOT}/.claude/${near}`;
+    const run = engine({
+      [`${HOME}/.claude/${far}`]: md(name, 'visibility:\n  visible-to:\n    include: [boss]\n'),
+      [path]: md(name),
+    }, { missingRead: path });
+    const result = near.startsWith('agents/') ? await run.spawn(name) : await run.tool('Skill', { skill: name });
+    expect(result.deny).toContain('admits only boss');
+    expect(run.logs.filter((line) => line.includes(path))).toHaveLength(1);
+  });
+
+  it('shows an unresolved identity diagnostic naming the unchecked action and recovery, without restricting work', async () => {
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' });
+    expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
+    expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
+    expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([
+      expect.stringMatching(/ghost.*no agent type.*checking Bash.*unchecked.*restore.*SubagentStart/),
+    ]);
+  });
+
+  it.each(['tool.call', 'agent.spawn'])('shows a hook failure diagnostic with %s reason, item and loop while proceeding', async (event) => {
+    const run = engine(SCOPED);
+    let called = 0;
+    const e = event === 'tool.call'
+      ? { tool: 'Bash', agentId: 'worker1' }
+      : { subagentType: 'scope-child', parentAgentId: 'worker1' };
+    expect(await run.caught(event, e, async () => { called++; return RAN; })).toEqual(RAN);
+    expect(called).toBe(1);
+    expect(run.logs).toEqual([
+      expect.stringContaining(`${event} failed; proceeding unchecked`),
+    ]);
+    expect(run.logs[0]).toContain('throw: forced hook failure');
+    expect(run.logs[0]).toContain(event === 'tool.call' ? 'Bash' : 'scope-child');
+    expect(run.logs[0]).toContain('worker1');
+  });
+
+  it.each(['throw', 'timeout'] as const)('reports an attachment hook failure (%s) and preserves the entire result', async (kind) => {
+    const run = engine(SCOPED);
+    const result = { text: AGENTS, extra: 'kept' };
+    let called = 0;
+    expect(await run.caught('prompt.attachment', { type: 'agent_listing_delta', agentId: 'worker1' }, async () => { called++; return result; }, { kind, message: 'attachment hook stalled' })).toBe(result);
+    expect(called).toBe(1);
+    expect(run.logs).toEqual([expect.stringContaining('prompt.attachment failed; proceeding unchecked')]);
+    expect(run.logs[0]).toContain(`${kind}: attachment hook stalled`);
+    expect(run.logs[0]).toContain('agent_listing_delta');
+    expect(run.logs[0]).toContain('worker1');
+  });
+
   it('logs an unlistable directory and leaves the listing whole', async () => {
     const run = engine(SCOPED, { failList: true });
     expect(await run.attach('agent_listing_delta', AGENTS)).toEqual({ text: AGENTS });
@@ -450,7 +536,7 @@ suite('plugin log adapter', () => {
     expect(info.filter((row) => row.event === 'denied').map((row) => row.where)).toEqual(['hooks/tool-visibility-controller.ts#tool.call', 'hooks/tool-visibility-controller.ts#agent.spawn']);
   });
 
-  it.each(['classic.SubagentStart', 'classic.SubagentStop', 'agent.spawn', 'tool.call'])('logs hook-threw then continues %s', async (event) => {
+  it.each(['classic.SubagentStart', 'classic.SubagentStop', 'prompt.attachment', 'agent.spawn', 'tool.call'])('logs hook-threw then continues %s', async (event) => {
     const dir = await logTemp();
     const run = engine({}, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
     let called = 0;

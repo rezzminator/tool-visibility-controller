@@ -2,6 +2,14 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.3.5-alpha] — 2026-10-19
+
+### Fixed
+
+- An unresolved loop identity now says what it left unchecked. A loop whose type no list or announcement names keeps its listings, calls and spawns unchanged (the plugin fails open, it is not a security boundary), and one diagnostic per loop names the action that could not be checked and how to recover: make the type known through the agent list or a `SubagentStart` announcement.
+- A hook that throws still leaves behavior unchanged, and its failure is now visible: the hook name, the failure kind and reason, the item or loop it concerned and the unchecked fallback that ran.
+- A missing definition file (`ENOENT`) is skipped instead of read as an empty definition, so it no longer overrides a farther valid definition. The skip is logged once per path in the session and every other definition still loads. A definition that exists but cannot be read keeps its nearest-tier behavior.
+
 ## [0.3.4-alpha] — 2026-10-18
 
 ### Fixed
