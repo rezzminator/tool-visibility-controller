@@ -258,7 +258,7 @@ async function loadPolicy($: EngineInterface, cache: Cache): Promise<Policy> {
   return buildPolicy(owned, mergeScopes(scopes));
 }
 
-// Read once per session; a load that failed is retried at the next use.
+// Read once until session.start or /reload-plugins; a failed load is retried at the next use.
 async function policyOf($: EngineInterface, cache: Cache): Promise<Policy> {
   cache.policy ??= loadPolicy($, cache);
   try {
@@ -358,6 +358,17 @@ export const register: Register = (on: On) => {
     cache.logDrain = Promise.all([cache.logDrain, finishLog($, cache, cache.log)]).then(() => {});
     cache.log = { work: Promise.resolve(), failing: false, pending: [] };
     return next(e);
+  });
+
+  // Unchanged modules get no session.start on reload. Invalidate after core finishes,
+  // even if it fails: a partial reload may already have changed the definitions.
+  on('command.run', { command: 'reload-plugins' }, async ($, e, next) => {
+    try {
+      return await next(e);
+    } finally {
+      cache.policy = undefined;
+      cache.missing.clear();
+    }
   });
 
   on('session.end', async ($, e, next) => {

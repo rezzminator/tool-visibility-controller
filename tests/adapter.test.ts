@@ -45,6 +45,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
   const timers: Array<() => void> = [];
   const agents: Array<{ id: string; type: string; status: string; description: string }> = [];
   let lists = 0;
+  const reads: string[] = [];
   const under = (path: string) => Object.keys(files).filter((f) => f.startsWith(`${path}/`));
   const $ = {
     env: { get: async (name: string) => { if (options.failEnv) throw new Error('env unreadable'); return (options.env ?? { HOME })[name]; } },
@@ -65,6 +66,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
         return [...names].map(([name, kind]) => ({ name, kind, size: 1, isLink: false }));
       },
       read: async (path: string) => {
+        reads.push(path);
         if (path === options.failRead) throw new Error(`EACCES: permission denied, open '${path}'`);
         if (path === options.missingRead) throw new Error(`ENOENT: no such file or directory, open '${path}'`);
         const text = files[path];
@@ -76,13 +78,22 @@ function engine(files: Record<string, string>, options: Options = {}) {
     tool: { list: async () => TOOLS.map((name) => ({ name, description: '' })) },
     ui: { log: (line: string, opts?: { to?: string }) => (opts?.to === 'debug' ? debugs : logs).push(line) },
   };
-  (register as Hook)((name: string, fn: Hook) => (hooks.set(name, fn), { catch: (handler: Hook) => catches.set(name, handler) }), {});
+  (register as Hook)((name: string, matcherOrHook: Record<string, string> | Hook, fn?: Hook) => {
+    const hook = typeof matcherOrHook === 'function' ? matcherOrHook : fn!;
+    hooks.set(name, ($, e, next) => typeof matcherOrHook === 'function' || Object.entries(matcherOrHook).every(([key, value]) => e[key] === value) ? hook($, e, next) : next(e));
+    return { catch: (handler: Hook) => catches.set(name, handler) };
+  }, {});
   const call = (name: string, e: unknown, next: Hook) => hooks.get(name)!($, e, next);
   return {
     logs,
     debugs,
     fireTimers: () => timers.splice(0).forEach((fn) => fn()),
     lists: () => lists,
+    reads: () => [...reads],
+    command: async (command: string, next: Hook = async () => ({})) => {
+      const e = Object.freeze({ command, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } });
+      return hooks.has('command.run') ? call('command.run', e, next) : next(e);
+    },
     sub: (id: string, type: string) => agents.push({ id, type, status: 'running', description: '' }),
     attach: (type: string, text: string, agentId?: string) =>
       call('prompt.attachment', { type, text, origin: { kind: 'engine' }, agentId }, async (e: { text: string }) => ({ text: e.text })),
@@ -174,6 +185,127 @@ suite('agents', () => {
     expect(await run.attach('agent_listing_delta', AGENTS, 'gp1')).toEqual({ text: AGENTS });
     expect((await run.spawn('Explore')).deny).toContain(`items.agents.Explore.visible-to in ${SCOPE} excludes main`);
     expect(await run.spawn('Explore', 'gp1')).toEqual({ model: 'm', agentId: 'new' });
+  });
+});
+
+suite('policy reload', () => {
+  const path = `${ROOT}/.claude/agents/scope-child.md`;
+  const restricted = md('scope-child', 'visibility:\n  visible-to:\n    include: [main]\n');
+  const expanded = md('scope-child', 'visibility:\n  visible-to:\n    include: [main, scope-parent]\n');
+
+  it('refreshes child listings and spawns after reload-plugins without session.start, preserving the command result', async () => {
+    const files = { [path]: restricted };
+    const run = engine(files);
+    run.sub('par1', 'scope-parent');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+    expect((await run.spawn('scope-child', 'par1')).deny).toContain('admits only main');
+    const result = { text: 'Plugins reloaded', context: ['reload context'], ref: 17, exitCode: 0 };
+    let calls = 0;
+    expect(await run.command('reload-plugins', async (e: unknown) => {
+      calls++;
+      expect(e).toEqual({ command: 'reload-plugins', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } });
+      files[path] = expanded;
+      // The old snapshot remains in use until the built-in command finishes.
+      expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+      return result;
+    })).toBe(result);
+    expect(calls).toBe(1);
+    // No module registration or session.start accompanies an unchanged module's reload.
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: AGENTS });
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.reads()).toEqual([path, path]);
+    expect(run.logs).toEqual([]);
+  });
+
+  it('also tightens listings and spawns after reload, keeping exclude stronger than include', async () => {
+    const files = { [path]: expanded };
+    const run = engine(files);
+    run.sub('par1', 'scope-parent');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: AGENTS });
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    files[path] = md('scope-child', 'visibility:\n  visible-to:\n    include: [main, scope-parent]\n    exclude: [scope-parent]\n');
+    await run.command('reload-plugins');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+    expect((await run.spawn('scope-child', 'par1')).deny).toContain(`visibility.visible-to in ${path} excludes scope-parent`);
+    expect(await run.spawn('scope-child')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.reads()).toEqual([path, path]);
+  });
+
+  it('keeps the cached rules and avoids redundant reads without reload or after unrelated commands', async () => {
+    const files = { [path]: restricted };
+    const run = engine(files);
+    run.sub('par1', 'scope-parent');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+    const once = run.lists();
+    files[path] = expanded;
+    for (const command of [undefined, 'status', 'reload-plugins-extra']) {
+      if (command !== undefined) {
+        const result = { text: command, ref: 23 };
+        let calls = 0;
+        expect(await run.command(command, async () => { calls++; return result; })).toBe(result);
+        expect(calls).toBe(1);
+      }
+      expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+      expect((await run.spawn('scope-child', 'par1')).deny).toContain('admits only main');
+      expect(run.reads()).toEqual([path]);
+      expect(run.lists()).toBe(once);
+    }
+  });
+
+  it.each(['throw', 'reject'] as const)('resets after a failed reload (%s) and preserves the exact error without retrying the command', async (kind) => {
+    const files = { [path]: restricted };
+    const run = engine(files);
+    run.sub('par1', 'scope-parent');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+    const error = new Error('reload failed');
+    let calls = 0;
+    await expect(run.command('reload-plugins', () => {
+      calls++;
+      files[path] = expanded;
+      if (kind === 'throw') throw error;
+      return Promise.reject(error);
+    })).rejects.toBe(error);
+    expect(calls).toBe(1);
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: AGENTS });
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.reads()).toEqual([path, path]);
+  });
+
+  it.each([false, true])('re-arms missing-definition diagnostics after reload (failed: %s) and reads restored definitions', async (failed) => {
+    const opts: Options = { missingRead: path };
+    const run = engine({ [path]: restricted }, opts);
+    run.sub('par1', 'scope-parent');
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.logs.filter((line) => line.includes(path))).toHaveLength(1);
+    const reload = run.command('reload-plugins', async () => { if (failed) throw new Error('reload failed'); return {}; });
+    if (failed) await expect(reload).rejects.toThrow('reload failed');
+    else await reload;
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    run.fireTimers();
+    expect(run.logs.filter((line) => line.includes(path))).toEqual([
+      expect.stringMatching(/ENOENT.*definition is skipped/),
+      expect.stringMatching(/ENOENT.*definition is skipped.*\(and 1 more\)/),
+    ]);
+    opts.missingRead = undefined;
+    await run.command('reload-plugins');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: WITHOUT_CHILD });
+    expect((await run.spawn('scope-child', 'par1')).deny).toContain('admits only main');
+    expect(run.reads()).toEqual([path, path, path]);
+  });
+
+  it('preserves fail-open diagnostics when the refreshed policy cannot be loaded', async () => {
+    const opts: Options = {};
+    const run = engine({ [path]: restricted }, opts);
+    run.sub('par1', 'scope-parent');
+    expect((await run.spawn('scope-child', 'par1')).deny).toContain('admits only main');
+    await run.command('reload-plugins');
+    opts.failRoot = true;
+    expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: AGENTS });
+    expect(await run.spawn('scope-child', 'par1')).toEqual({ model: 'm', agentId: 'new' });
+    expect(run.logs.join('\n')).toMatch(/rewriting.*policy root unreadable.*left whole/);
+    expect(run.logs.join('\n')).toMatch(/checking.*policy root unreadable.*goes through/);
+    opts.failRoot = false;
+    expect((await run.spawn('scope-child', 'par1')).deny).toContain('admits only main');
   });
 });
 
