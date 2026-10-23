@@ -1,15 +1,14 @@
 name: ci
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release:
         description: Also run the release check against main's version
         type: boolean
         default: false
-  pull_request:
-  push:
-    branches: [develop, main]
 
 permissions:
   contents: read
