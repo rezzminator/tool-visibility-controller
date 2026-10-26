@@ -2,31 +2,16 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
-## [0.3.6-alpha] — 2026-10-21
+## [0.3.6] — 2026-10-27
 
 ### Fixed
 
 - `/reload-plugins` now clears the cached visibility policy and missing-definition path suppression after the command finishes, even if it throws. The next policy use rereads definitions and scope files, including edits made while the controller module itself is unchanged: reload sends `session.start` only to changed modules, so the unchanged controller previously kept its old rules. The command runs once, unchanged, and its result or error is preserved; other commands retain lazy read-once caching, and `session.start` still resets the cache.
-
-## [0.3.5-alpha] — 2026-10-19
-
-### Fixed
-
 - An unresolved loop identity now says what it left unchecked. A loop whose type no list or announcement names keeps its listings, calls and spawns unchanged (the plugin fails open, it is not a security boundary), and one diagnostic per loop names the action that could not be checked and how to recover: make the type known through the agent list or a `SubagentStart` announcement.
 - A hook that throws still leaves behavior unchanged, and its failure is now visible: the hook name, the failure kind and reason, the item or loop it concerned and the unchecked fallback that ran.
 - A missing definition file (`ENOENT`) is skipped instead of read as an empty definition, so it no longer overrides a farther valid definition. The skip is logged once per path in the session and every other definition still loads. A definition that exists but cannot be read keeps its nearest-tier behavior.
-
-## [0.3.4-alpha] — 2026-10-18
-
-### Fixed
-
 - A burst of identical diagnostics no longer floods the screen. When the hooks worker stalls, every tool call used to print `tool.call failed; proceeding unchecked`; now the first line shows, the repeats are counted, and one `(and N more)` line follows once the burst ends (and every 30 seconds while it lasts, and at session end). Every row is still written to `errors.jsonl`.
 - No log row is dropped to a transient failure. A row now waits for the next write when the engine clock, the environment or `process.run` is briefly unreachable (a stalled hooks worker): the clock falls back to local time, a failed batch is kept in order (at most 1000 rows) and written with the next row or at session end. Only the final write at session end or start gives a row up, with the usual screen fallback. A write that timed out after it succeeded can leave a duplicate row, never a missing one.
-
-## [0.3.3-alpha] — 2026-10-17
-
-### Fixed
-
 - Error diagnostics now always reach the screen and the plugin log, including all four fail-open hook catches. Ignored definitions, malformed or misplaced visibility blocks, unreadable scope files, skipped user tiers and unresolved loop types are errors because enforcement is incomplete.
 - Warning and info diagnostics stay off screen while the plugin log is working. Missing session metadata is a logged warning; if no log directory is resolvable or a write fails, warning and info messages fall back to the screen alongside the log failure notice. Denial reasons returned to the model are unchanged.
 
