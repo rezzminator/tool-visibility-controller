@@ -2,6 +2,10 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+- Installs as `tool-visibility-controller@professor` from the professor marketplace; the repo's own marketplace file is gone.
+
 ## [0.3.6] — 2026-10-27
 
 ### Fixed

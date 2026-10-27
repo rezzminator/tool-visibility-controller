@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
-    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/tool-visibility-controller",
+    "validate:plugin": "claude plugin validate --strict plugins/tool-visibility-controller",
     "release:check": "scripts/release-check.sh"
   },
   "devDependencies": {

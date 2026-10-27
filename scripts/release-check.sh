@@ -10,12 +10,10 @@ v=$(read_json plugins/tool-visibility-controller/.claude-plugin/plugin.json vers
 [ -n "$v" ] || { echo "ERROR plugin.json has no version"; exit 2; }
 v_re=$(printf '%s' "$v" | sed 's/\./\\./g')
 fail=0
-m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "tool-visibility-controller")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
 p=$(read_json package.json version) || exit 2
 l=$(read_json package-lock.json version) || exit 2
 lr=$(read_json package-lock.json packages..version) || exit 2
 b=$(grep -oE 'badge/version-[0-9]+\.[0-9]+\.[0-9]+(--[0-9A-Za-z.]+)?-' README.md | sed -E 's/^badge\/version-//; s/-$//; s/--/-/')
-[ "$m" = "$v" ] || { echo "FAIL marketplace.json says $m, plugin.json $v"; fail=1; }
 [ "$p" = "$v" ] || { echo "FAIL package.json says $p, plugin.json $v"; fail=1; }
 [ "$l" = "$v" ] && [ "$lr" = "$v" ] || { echo "FAIL package-lock.json says $l / $lr, plugin.json $v"; fail=1; }
 [ "$b" = "$v" ] || { echo "FAIL README badge says ${b:-nothing}, plugin.json $v"; fail=1; }
