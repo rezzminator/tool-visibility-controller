@@ -1,6 +1,8 @@
 import type { EngineInterface, On, Register } from 'claude-code';
-import { levelRow, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
+import { levelRow, MAX_RETAINED_ROWS, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
+import { BURST_WINDOW_MS, ScreenBurst } from '../src/screen-burst.ts';
 import { AgentTypes } from '../src/agent-types.ts';
+import { hookFailureText, message, missingDefinition, unresolvedLoopText } from '../src/failures.ts';
 import { SpawnCalls } from '../src/spawns.ts';
 import { filterDeferredTools, filterEntries, filterMcpInstructions } from '../src/listings.ts';
 import {
@@ -31,58 +33,105 @@ const LISTINGS = new Set(['agent_listing_delta', 'skill_listing', 'mcp_instructi
 /** How deep command subdirectories are read (`a:b:c`). */
 const COMMAND_DEPTH = 3;
 
-type Logger = { queue: PluginLogQueue; session?: string };
-type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean };
-type Cache = { policy?: Promise<Policy>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void> };
+type Logger = { queue: PluginLogQueue; session?: string; warning?: string };
+type Pending = { level: Level; event: string; msg: string; hook: string; detail?: Record<string, unknown>; at: number };
+type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean; pending: Pending[] };
+type Cache = { policy?: Promise<Policy>; missing: Set<string>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; burst: ScreenBurst; burstArmed: boolean };
 type Entry = { name: string; kind: string; isLink?: boolean };
 type Read = { name: string; owned: Owned | null };
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 const PLUGIN = 'tool-visibility-controller';
 
 // The logger's last-resort screen door never interferes with a policy result.
-function logFallback($: EngineInterface, text: string): void {
-  try { $.ui.log(`${PLUGIN}: ${text}`); } catch {
-    // No other screen door exists when ui.log itself is unavailable.
+// Identical lines collapse: a burst shows its first line, then one count.
+function showLines($: EngineInterface, lines: readonly string[]): void {
+  for (const line of lines) {
+    try { $.ui.log(line); } catch {
+      // No other screen door exists when ui.log itself is unavailable.
+    }
   }
 }
 
-async function loggerOf($: EngineInterface, state: LogState): Promise<Logger> {
+function logFallback($: EngineInterface, cache: Cache, text: string): void {
+  showLines($, cache.burst.offer(text.startsWith(`${PLUGIN}: `) ? text : `${PLUGIN}: ${text}`, Date.now()));
+  if (cache.burstArmed || cache.burst.pending() === 0) return;
+  cache.burstArmed = true;
+  try {
+    $.clock.after(BURST_WINDOW_MS, () => {
+      cache.burstArmed = false;
+      showLines($, cache.burst.drain());
+    });
+  } catch {
+    // Without a timer the count still shows at the next repeat past the window or at session end.
+    cache.burstArmed = false;
+  }
+}
+
+async function loggerOf($: EngineInterface, cache: Cache, state: LogState): Promise<Logger> {
   state.logger ??= (async () => {
     const override = await $.env.get('PLUGIN_LOG_DIR');
     const home = await $.env.get('HOME');
     const dir = pluginLogDir(override, home, PLUGIN);
     let session: string | undefined;
+    let warning: string | undefined;
     try { session = await $.session.id(); } catch (error) {
-      logFallback($, `plugin log ${dir ?? 'off'}: session id unavailable: ${message(error)}; session omitted`);
+      warning = `session id unavailable: ${message(error)}; session omitted`;
     }
-    return { queue: new PluginLogQueue(dir, PLUGIN, (text) => logFallback($, text)), session };
+    return { queue: new PluginLogQueue(dir, PLUGIN, (text) => logFallback($, cache, text)), session, warning };
   })();
-  return state.logger;
+  try {
+    return await state.logger;
+  } catch (error) {
+    // A rejected initialization can recover on the next event.
+    state.logger = undefined;
+    throw error;
+  }
+}
+
+// Rows wait in state.pending until the logger exists, and in its queue until a write lands: a stalled
+// worker rejects the `$` calls here, and a rejected step keeps what it had not yet handed over.
+// Only the final step (session end or start) gives a row up, with the usual screen fallback.
+async function drainLog($: EngineInterface, cache: Cache, state: LogState, final: boolean): Promise<void> {
+  if (state.pending.length === 0 && (!final || state.logger === undefined)) return;
+  const logger = await loggerOf($, cache, state);
+  let clock: number | undefined;
+  let clockFailed = false;
+  try { clock = await $.clock.now(); } catch (error) {
+    clockFailed = true;
+    if (!state.failing) logFallback($, cache, `plugin log clock: ${message(error)}; local time used`);
+  }
+  if (logger.warning !== undefined) {
+    logger.queue.add(levelRow({ plugin: PLUGIN, level: 'warning', event: 'log-session-unavailable', msg: logger.warning, where: 'hooks/tool-visibility-controller.ts#loggerOf' }, clock ?? Date.now()));
+    logger.warning = undefined;
+  }
+  for (const item of state.pending.splice(0)) {
+    logger.queue.add(levelRow({ plugin: PLUGIN, level: item.level, event: item.event, msg: item.msg, where: `hooks/tool-visibility-controller.ts#${item.hook}`, session: logger.session, detail: item.detail }, clock ?? item.at));
+  }
+  await logger.queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }), { retain: !final });
+  state.failing = clockFailed;
+}
+
+function logStepFailed($: EngineInterface, cache: Cache, state: LogState, error: unknown, final: boolean): void {
+  if (!state.failing) logFallback($, cache, `plugin log metadata: ${message(error)}; ${final ? 'rows dropped' : 'rows kept for retry'}`);
+  state.failing = true;
+  if (final) for (const item of state.pending.splice(0)) if (item.level !== 'error') logFallback($, cache, item.msg);
 }
 
 function plog($: EngineInterface, cache: Cache, level: Level, event: string, msg: string, hook: string, detail?: Record<string, unknown>): void {
+  if (level === 'error') logFallback($, cache, msg);
   const state = cache.log;
-  state.work = state.work.then(async () => {
-    const logger = await loggerOf($, state);
-    const now = await $.clock.now();
-    logger.queue.add(levelRow({ plugin: PLUGIN, level, event, msg, where: `hooks/tool-visibility-controller.ts#${hook}`, session: logger.session, detail }, now));
-    await logger.queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }));
-    state.failing = false;
-  }).catch((error) => {
-    if (!state.failing) logFallback($, `plugin log metadata: ${message(error)}; row dropped`);
-    state.failing = true;
-    // A rejected initialization can recover on the next event.
-    state.logger = undefined;
-  });
+  state.pending.push({ level, event, msg, hook, detail, at: Date.now() });
+  if (state.pending.length > MAX_RETAINED_ROWS) {
+    const oldest = state.pending.shift()!;
+    if (oldest.level !== 'error') logFallback($, cache, oldest.msg);
+  }
+  state.work = state.work.then(() => drainLog($, cache, state, false)).catch((error) => logStepFailed($, cache, state, error, false));
 }
 
-function note($: EngineInterface, cache: Cache, level: Level, event: string, msg: string, hook: string, detail?: Record<string, unknown>): void {
-  plog($, cache, level, event, msg, hook, detail);
-  $.ui.log(msg);
+// The last write of a log state, at session end or when a new session replaces it.
+function finishLog($: EngineInterface, cache: Cache, state: LogState): Promise<void> {
+  state.work = state.work.then(() => drainLog($, cache, state, true)).catch((error) => logStepFailed($, cache, state, error, true));
+  return state.work;
 }
 
 function claudeDir(dir: string): string {
@@ -94,30 +143,37 @@ async function entriesOf($: EngineInterface, cache: Cache, dir: string): Promise
   try {
     return await $.fs.list(dir);
   } catch (error) {
-    note($, cache, 'warning', 'agent-dir-unlisted', `tool-visibility-controller: listing ${dir} failed: ${message(error)}; the definitions in it are not read`, 'entriesOf', { error: message(error), path: dir });
+    plog($, cache, 'error', 'agent-dir-unlisted', `tool-visibility-controller: listing ${dir} failed: ${message(error)}; the definitions in it are not read`, 'entriesOf', { error: message(error), path: dir });
     return [];
   }
 }
 
-// One definition file. Unreadable, it is logged and still stands for its name
-// with no rule, so it overrides a farther definition as Claude Code's does.
-async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'agents' | 'skills', fallback: string, byPath: boolean): Promise<Read> {
+// A missing definition is skipped; it must not mask a farther valid one.
+// Other unreadable files still stand for their name with no rule, as before.
+async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'agents' | 'skills', fallback: string, byPath: boolean): Promise<Read | null> {
   let text: string;
   try {
     text = await $.fs.read(path);
   } catch (error) {
-    note($, cache, 'warning', 'agent-def-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; ${fallback} has no visibility rule`, 'readOwned', { error: message(error), path });
+    if (missingDefinition(error)) {
+      if (!cache.missing.has(path)) {
+        cache.missing.add(path);
+        plog($, cache, 'error', 'agent-def-missing', `tool-visibility-controller: reading ${path} failed: ${message(error)}; definition is skipped; other definitions are still read`, 'readOwned', { error: message(error), path });
+      }
+      return null;
+    }
+    plog($, cache, 'error', 'agent-def-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; ${fallback} has no visibility rule`, 'readOwned', { error: message(error), path });
     return { name: fallback, owned: null };
   }
   const definition = readDefinition(text, fallback);
   const name = byPath ? fallback : definition.name;
-  for (const problem of definition.problems) note($, cache, 'warning', 'frontmatter-problem', `tool-visibility-controller: ${path}: ${problem}; that block is ignored`, 'readOwned', { error: problem, path });
+  for (const problem of definition.problems) plog($, cache, 'error', 'frontmatter-problem', `tool-visibility-controller: ${path}: ${problem}; that block is ignored`, 'readOwned', { error: problem, path });
   const visibility = definition.visibility;
   if (visibility === null) return { name, owned: null };
   if (set !== 'agents') {
     for (const viewed of SETS) {
       if (visibility.sets[viewed] !== undefined) {
-        note($, cache, 'warning', 'frontmatter-problem', `tool-visibility-controller: ${path}: visibility.${viewed} applies only in agent files; it is ignored here`, 'readOwned', { path });
+        plog($, cache, 'error', 'frontmatter-problem', `tool-visibility-controller: ${path}: visibility.${viewed} applies only in agent files; it is ignored here`, 'readOwned', { path });
       }
     }
   }
@@ -128,7 +184,8 @@ async function readAgents($: EngineInterface, cache: Cache, dir: string): Promis
   const read: Read[] = [];
   for (const entry of await entriesOf($, cache, dir)) {
     if (!entry.name.endsWith('.md') || entry.kind === 'dir') continue;
-    read.push(await readOwned($, cache, `${dir}/${entry.name}`, 'agents', entry.name.slice(0, -3), false));
+    const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'agents', entry.name.slice(0, -3), false);
+    if (definition !== null) read.push(definition);
   }
   return read;
 }
@@ -138,7 +195,10 @@ async function readSkills($: EngineInterface, cache: Cache, dir: string): Promis
   for (const entry of await entriesOf($, cache, dir)) {
     if (entry.kind === 'file') continue;
     const path = `${dir}/${entry.name}/SKILL.md`;
-    if (await $.fs.exists(path)) read.push(await readOwned($, cache, path, 'skills', entry.name, false));
+    if (await $.fs.exists(path)) {
+      const definition = await readOwned($, cache, path, 'skills', entry.name, false);
+      if (definition !== null) read.push(definition);
+    }
   }
   return read;
 }
@@ -148,7 +208,8 @@ async function readCommands($: EngineInterface, cache: Cache, dir: string, prefi
   const read: Read[] = [];
   for (const entry of await entriesOf($, cache, dir)) {
     if (entry.name.endsWith('.md') && entry.kind !== 'dir') {
-      read.push(await readOwned($, cache, `${dir}/${entry.name}`, 'skills', `${prefix}${entry.name.slice(0, -3)}`, true));
+      const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'skills', `${prefix}${entry.name.slice(0, -3)}`, true);
+      if (definition !== null) read.push(definition);
     } else if (depth < COMMAND_DEPTH && (entry.kind === 'dir' || entry.isLink === true)) {
       read.push(...(await readCommands($, cache, `${dir}/${entry.name}`, `${prefix}${entry.name}:`, depth + 1)));
     }
@@ -162,11 +223,11 @@ async function readScope($: EngineInterface, cache: Cache, path: string): Promis
   try {
     text = await $.fs.read(path);
   } catch (error) {
-    note($, cache, 'warning', 'scope-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; the file is ignored`, 'readScope', { error: message(error), path });
+    plog($, cache, 'error', 'scope-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; the file is ignored`, 'readScope', { error: message(error), path });
     return null;
   }
   const { scope, problems } = readScopeFile(text);
-  for (const problem of problems) note($, cache, 'warning', 'scope-problem', `tool-visibility-controller: ${path}: ${problem}; ${scope === null ? 'the file is ignored' : 'that block is ignored'}`, 'readScope', { error: problem, path });
+  for (const problem of problems) plog($, cache, 'error', 'scope-problem', `tool-visibility-controller: ${path}: ${problem}; ${scope === null ? 'the file is ignored' : 'that block is ignored'}`, 'readScope', { error: problem, path });
   return scope;
 }
 
@@ -180,7 +241,7 @@ async function loadPolicy($: EngineInterface, cache: Cache): Promise<Policy> {
   const tiers: string[] = [];
   if (config !== undefined && config !== '') tiers.push(config);
   else if (home !== undefined && home !== '') tiers.push(`${home}/.claude`);
-  else note($, cache, 'warning', 'user-tier-skipped', 'tool-visibility-controller: neither CLAUDE_CONFIG_DIR nor HOME is set; user definitions and scope file are not read', 'loadPolicy');
+  else plog($, cache, 'error', 'user-tier-skipped', 'tool-visibility-controller: neither CLAUDE_CONFIG_DIR nor HOME is set; user definitions and scope file are not read', 'loadPolicy');
   for (const dir of ancestorDirs(await $.session.root(), home)) tiers.push(claudeDir(dir));
   const agents = new Map<string, Owned | null>();
   const skills = new Map<string, Owned | null>();
@@ -197,7 +258,7 @@ async function loadPolicy($: EngineInterface, cache: Cache): Promise<Policy> {
   return buildPolicy(owned, mergeScopes(scopes));
 }
 
-// Read once per session; a load that failed is retried at the next use.
+// Read once until session.start or /reload-plugins; a failed load is retried at the next use.
 async function policyOf($: EngineInterface, cache: Cache): Promise<Policy> {
   cache.policy ??= loadPolicy($, cache);
   try {
@@ -218,12 +279,10 @@ async function loopType($: EngineInterface, cache: Cache, agentId: string | unde
 
 // A loop with no type is reported once, not at every listing and every call:
 // the engine's own forks (compaction, memory) send a listing of each kind.
-// Its screen notice stays debug-only; the durable row is info, not a fault.
-function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined): void {
+// Enforcement is skipped, so this is an error even for an engine-owned fork.
+function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined, action: string): void {
   if (!cache.types.firstMiss(String(agentId))) return;
-  const msg = `tool-visibility-controller: loop ${String(agentId)} resolves to no agent type (no agent list names it and no SubagentStart announced it); its listings, spawns and tool calls are left whole`;
-  plog($, cache, 'info', 'name-unresolved', msg, 'logUnresolved', { agentId });
-  $.ui.log(msg, { to: 'debug' });
+  plog($, cache, 'error', 'name-unresolved', unresolvedLoopText(String(agentId), action), 'logUnresolved', { agentId, action });
 }
 
 function hider(policy: Policy, set: SetName, loop: string): (name: string) => boolean {
@@ -236,7 +295,7 @@ async function rewritten($: EngineInterface, cache: Cache, type: string, text: s
     if (isEmpty(policy)) return text;
     const loop = await loopType($, cache, agentId);
     if (loop === undefined) {
-      logUnresolved($, cache, agentId);
+      logUnresolved($, cache, agentId, `rewriting ${type}`);
       return text;
     }
     if (type === 'agent_listing_delta') return hasRules(policy, 'agents') ? filterEntries(text, hider(policy, 'agents', loop), 'agents') : text;
@@ -256,7 +315,7 @@ async function rewritten($: EngineInterface, cache: Cache, type: string, text: s
       return own.length > 0 && own.every(mcp);
     });
   } catch (error) {
-    note($, cache, 'error', 'rewrite-failed', `tool-visibility-controller: rewriting the ${type} of loop ${agentId ?? MAIN} failed: ${message(error)}; it is left whole`, 'rewritten', { error: message(error) });
+    plog($, cache, 'error', 'rewrite-failed', `tool-visibility-controller: rewriting the ${type} of loop ${agentId ?? MAIN} failed: ${message(error)}; it is left whole`, 'rewritten', { error: message(error) });
     return text;
   }
 }
@@ -269,7 +328,7 @@ async function checkCall($: EngineInterface, cache: Cache, targets: ReadonlyArra
     if (relevant.length === 0) return undefined;
     const loop = await loopType($, cache, agentId);
     if (loop === undefined) {
-      logUnresolved($, cache, agentId);
+      logUnresolved($, cache, agentId, `checking ${what}`);
       return undefined;
     }
     for (const [set, item] of relevant) {
@@ -278,7 +337,7 @@ async function checkCall($: EngineInterface, cache: Cache, targets: ReadonlyArra
     }
     return undefined;
   } catch (error) {
-    note($, cache, 'error', 'check-failed', `tool-visibility-controller: checking ${what} from loop ${agentId ?? MAIN} failed: ${message(error)}; it goes through`, 'checkCall', { error: message(error) });
+    plog($, cache, 'error', 'check-failed', `tool-visibility-controller: checking ${what} from loop ${agentId ?? MAIN} failed: ${message(error)}; it goes through`, 'checkCall', { error: message(error) });
     return undefined;
   }
 }
@@ -291,17 +350,30 @@ function callTargets(tool: string, skill: unknown): Array<[SetName, string]> {
 }
 
 export const register: Register = (on: On) => {
-  const cache: Cache = { types: new AgentTypes(), spawns: new SpawnCalls(), log: { work: Promise.resolve(), failing: false }, logDrain: Promise.resolve() };
+  const cache: Cache = { missing: new Set(), types: new AgentTypes(), spawns: new SpawnCalls(), log: { work: Promise.resolve(), failing: false, pending: [] }, logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false };
 
   on('session.start', async ($, e, next) => {
     cache.policy = undefined;
-    cache.logDrain = Promise.all([cache.logDrain, cache.log.work]).then(() => {});
-    cache.log = { work: Promise.resolve(), failing: false };
+    cache.missing.clear();
+    cache.logDrain = Promise.all([cache.logDrain, finishLog($, cache, cache.log)]).then(() => {});
+    cache.log = { work: Promise.resolve(), failing: false, pending: [] };
     return next(e);
   });
 
+  // Unchanged modules get no session.start on reload. Invalidate after core finishes,
+  // even if it fails: a partial reload may already have changed the definitions.
+  on('command.run', { command: 'reload-plugins' }, async ($, e, next) => {
+    try {
+      return await next(e);
+    } finally {
+      cache.policy = undefined;
+      cache.missing.clear();
+    }
+  });
+
   on('session.end', async ($, e, next) => {
-    await Promise.all([cache.logDrain, cache.log.work]);
+    await Promise.all([cache.logDrain, finishLog($, cache, cache.log)]);
+    showLines($, cache.burst.drain());
     return next(e);
   });
 
@@ -310,7 +382,7 @@ export const register: Register = (on: On) => {
     cache.types.learn(e.agent_id, e.agent_type);
     return next(e);
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `classic.SubagentStart failed; proceeding unchecked`, 'classic.SubagentStart', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('classic.SubagentStart', next.error, `agent ${e.agent_id}, type ${e.agent_type}`), 'classic.SubagentStart', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 
@@ -318,7 +390,7 @@ export const register: Register = (on: On) => {
     cache.types.learn(e.agent_id, e.agent_type);
     return next(e);
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `classic.SubagentStop failed; proceeding unchecked`, 'classic.SubagentStop', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('classic.SubagentStop', next.error, `agent ${e.agent_id}, type ${e.agent_type}`), 'classic.SubagentStop', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 
@@ -327,6 +399,9 @@ export const register: Register = (on: On) => {
     if (!LISTINGS.has(e.type) || result.text === null) return result;
     const text = await rewritten($, cache, e.type, result.text, e.agentId);
     return text === result.text ? result : { ...result, text };
+  }).catch(($, e, next) => {
+    plog($, cache, 'error', 'hook-threw', hookFailureText('prompt.attachment', next.error, `listing ${e.type}, loop ${e.agentId ?? MAIN}`), 'prompt.attachment', { kind: next.error.kind, error: next.error.message });
+    return next(e);
   });
 
   // A hook that throws or overruns its budget lets the spawn through.
@@ -337,7 +412,7 @@ export const register: Register = (on: On) => {
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'agent.spawn');
     return deny === undefined ? next(e) : { deny };
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `agent.spawn failed; proceeding unchecked`, 'agent.spawn', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('agent.spawn', next.error, `agent ${e.subagentType}, loop ${e.parentAgentId ?? MAIN}`), 'agent.spawn', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 
@@ -348,7 +423,7 @@ export const register: Register = (on: On) => {
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'tool.call');
     return deny === undefined ? next(e) : { deny };
   }).catch(($, e, next) => {
-    plog($, cache, 'error', 'hook-threw', `tool.call failed; proceeding unchecked`, 'tool.call', { kind: next.error.kind, error: next.error.message });
+    plog($, cache, 'error', 'hook-threw', hookFailureText('tool.call', next.error, `tool ${e.tool}, loop ${e.agentId ?? MAIN}`), 'tool.call', { kind: next.error.kind, error: next.error.message });
     return next(e);
   });
 };
