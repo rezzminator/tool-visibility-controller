@@ -16,7 +16,7 @@
     <rect x="96" y="378" width="1088" height="206" rx="16" fill="#1f2937"/>
     <text x="128" y="424" fill="#9ca3af">visibility:</text>
     <text x="162" y="464" fill="#9ca3af">visible-to:<tspan x="380" fill="#d97757">{ include: [research-lead] }</tspan></text>
-    <text x="162" y="504" fill="#9ca3af">mcp:<tspan x="380" fill="#d97757">{ include: [harvester-professor/*] }</tspan></text>
+    <text x="162" y="504" fill="#9ca3af">mcp:<tspan x="380" fill="#d97757">{ include: [harvester/*] }</tspan></text>
     <text x="162" y="544" fill="#9ca3af">tools:<tspan x="380" fill="#d97757">{ exclude: [Bash] }</tspan></text>
   </g>
 </svg>

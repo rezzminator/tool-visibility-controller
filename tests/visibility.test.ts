@@ -19,13 +19,13 @@ suite('readDefinition: the visibility field', () => {
   it.each([
     [
       'block maps with flow lists',
-      'visibility:\n  visible-to:\n    include: [rr, rr-pro, main]\n    exclude: []\n  tools:\n    exclude: [WebFetch]',
-      { visibleTo: { include: ['rr', 'rr-pro', 'main'], exclude: [] }, sets: { tools: { exclude: ['WebFetch'] } } },
+      'visibility:\n  visible-to:\n    include: [researcher, researcher-pro, main]\n    exclude: []\n  tools:\n    exclude: [WebFetch]',
+      { visibleTo: { include: ['researcher', 'researcher-pro', 'main'], exclude: [] }, sets: { tools: { exclude: ['WebFetch'] } } },
     ],
     [
       'flow maps per set',
-      'visibility:\n  skills:  { include: [a, "b"], exclude: [c] }   # trailing comment\n  mcp: {exclude: [harvester-professor/*]}',
-      { sets: { skills: { include: ['a', 'b'], exclude: ['c'] }, mcp: { exclude: ['harvester-professor/*'] } } },
+      'visibility:\n  skills:  { include: [a, "b"], exclude: [c] }   # trailing comment\n  mcp: {exclude: [harvester/*]}',
+      { sets: { skills: { include: ['a', 'b'], exclude: ['c'] }, mcp: { exclude: ['harvester/*'] } } },
     ],
     [
       'block lists, indented and at the key\'s own indent',
@@ -39,8 +39,8 @@ suite('readDefinition: the visibility field', () => {
     ],
     [
       'an MCP server name with spaces and a glob',
-      'visibility:\n  mcp:\n    include: [claude.ai Docs/*, harvester-professor]',
-      { sets: { mcp: { include: ['claude.ai Docs/*', 'harvester-professor'] } } },
+      'visibility:\n  mcp:\n    include: [claude.ai Docs/*, harvester]',
+      { sets: { mcp: { include: ['claude.ai Docs/*', 'harvester'] } } },
     ],
     [
       'flow collections with a trailing comma',
@@ -49,8 +49,8 @@ suite('readDefinition: the visibility field', () => {
     ],
     [
       'a flow list wrapped over lines, as a formatter writes it',
-      'visibility:\n  visible-to:\n    include:\n      [\n        rr,\n        rr-pro,\n      ]\n  agents:\n    exclude: [Explore,\n      Plan]',
-      { visibleTo: { include: ['rr', 'rr-pro'] }, sets: { agents: { exclude: ['Explore', 'Plan'] } } },
+      'visibility:\n  visible-to:\n    include:\n      [\n        researcher,\n        researcher-pro,\n      ]\n  agents:\n    exclude: [Explore,\n      Plan]',
+      { visibleTo: { include: ['researcher', 'researcher-pro'] }, sets: { agents: { exclude: ['Explore', 'Plan'] } } },
     ],
     [
       'the whole field as a flow map wrapped over lines',

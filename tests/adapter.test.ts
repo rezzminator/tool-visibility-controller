@@ -29,9 +29,9 @@ const AGENTS = [
 const WITHOUT_CHILD = AGENTS.replace('- scope-child: Child. (Tools: Read)\n', '');
 
 const SKILLS = ['The following skills are available for use with the Skill tool:', '', '- greet: Greets.', '- kit:cmd: A nested command.', '- other: Other.'].join('\n');
-const MCP = ['# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## harvester-professor', 'Read a web page → read.', '', '## chat-professor', 'Message a chat → call.', '', '## docs', 'Docs.'].join('\n');
-const DEFERRED = ['The following deferred tools are now available via ToolSearch:', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__docs__read'].join('\n');
-const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__harvester-professor__read', 'mcp__chat-professor__ls', 'mcp__chat-professor__call', 'mcp__docs__read', 'mcp__my__srv__read'];
+const MCP = ['# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## harvester', 'Read a web page → read.', '', '## chat', 'Message a chat → call.', '', '## docs', 'Docs.'].join('\n');
+const DEFERRED = ['The following deferred tools are now available via ToolSearch:', 'WebFetch', 'mcp__harvester__search_web', 'mcp__docs__read'].join('\n');
+const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester__search_web', 'mcp__harvester__read', 'mcp__chat__ls', 'mcp__chat__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
 type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
@@ -347,34 +347,34 @@ suite('skills and commands', () => {
 
 suite('MCP', () => {
   const FILES = {
-    [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['harvester-professor/*'] } } } }),
-    [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  mcp:\n    include: [harvester-professor/search_web]\n'),
+    [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['harvester/*'] } } } }),
+    [`${ROOT}/.claude/agents/researcher.md`]: md('researcher', 'visibility:\n  mcp:\n    include: [harvester/search_web]\n'),
   };
 
   it('refuses an MCP tool call by the loop rules and lets an allowed one through', async () => {
     const run = engine(FILES);
-    run.sub('r1', 'rr');
-    expect((await run.tool('mcp__harvester-professor__search_web', { query: 'x' })).deny).toContain(`loops.main.mcp in ${SCOPE} excludes harvester-professor/*`);
-    expect(await run.tool('mcp__harvester-professor__search_web', { query: 'x' }, 'r1')).toEqual(RAN);
-    expect((await run.tool('mcp__docs__read', {}, 'r1')).deny).toContain('admits only harvester-professor/search_web');
+    run.sub('r1', 'researcher');
+    expect((await run.tool('mcp__harvester__search_web', { query: 'x' })).deny).toContain(`loops.main.mcp in ${SCOPE} excludes harvester/*`);
+    expect(await run.tool('mcp__harvester__search_web', { query: 'x' }, 'r1')).toEqual(RAN);
+    expect((await run.tool('mcp__docs__read', {}, 'r1')).deny).toContain('admits only harvester/search_web');
     expect(await run.tool('mcp__docs__read', {})).toEqual(RAN);
-    expect(await run.tool('mcp__chat-professor__call', { target: 'scratch', message: 'hello' })).toEqual(RAN);
+    expect(await run.tool('mcp__chat__call', { target: 'scratch', message: 'hello' })).toEqual(RAN);
   });
 
   it("drops a server's instructions only for a loop that may use none of its tools", async () => {
     const run = engine(FILES);
-    run.sub('r1', 'rr');
-    expect(await run.attach('mcp_instructions_delta', MCP)).toEqual({ text: MCP.replace('## harvester-professor\nRead a web page → read.\n\n', '') });
-    expect(await run.attach('mcp_instructions_delta', MCP, 'r1')).toEqual({ text: MCP.replace('\n\n## chat-professor\nMessage a chat → call.', '').replace('\n\n## docs\nDocs.', '') });
+    run.sub('r1', 'researcher');
+    expect(await run.attach('mcp_instructions_delta', MCP)).toEqual({ text: MCP.replace('## harvester\nRead a web page → read.\n\n', '') });
+    expect(await run.attach('mcp_instructions_delta', MCP, 'r1')).toEqual({ text: MCP.replace('\n\n## chat\nMessage a chat → call.', '').replace('\n\n## docs\nDocs.', '') });
     const spaced = engine({ [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['my  srv'] } } } }) });
     expect(await spaced.attach('mcp_instructions_delta', `${MCP}\n\n## my  srv\nMine.`)).toEqual({ text: MCP });
     expect((await spaced.tool('mcp__my__srv__read', {})).deny).toContain('excludes my  srv');
   });
 
   it('hides MCP and built-in tools from the deferred list per loop', async () => {
-    const run = engine({ ...FILES, [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  tools:\n    exclude: [WebFetch]\n') });
-    run.sub('r1', 'rr');
-    expect(await run.attach('deferred_tools_delta', DEFERRED)).toEqual({ text: DEFERRED.replace('mcp__harvester-professor__search_web\n', '') });
+    const run = engine({ ...FILES, [`${ROOT}/.claude/agents/researcher.md`]: md('researcher', 'visibility:\n  tools:\n    exclude: [WebFetch]\n') });
+    run.sub('r1', 'researcher');
+    expect(await run.attach('deferred_tools_delta', DEFERRED)).toEqual({ text: DEFERRED.replace('mcp__harvester__search_web\n', '') });
     expect(await run.attach('deferred_tools_delta', DEFERRED, 'r1')).toEqual({ text: DEFERRED.replace('WebFetch\n', '') });
   });
 });
@@ -382,12 +382,12 @@ suite('MCP', () => {
 suite('built-in tools', () => {
   it("refuses a built-in tool by an agent's tools block and by a scope-file loop rule", async () => {
     const run = engine({
-      [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  tools:\n    include: [Read, Web*]\n    exclude: [WebFetch]\n'),
+      [`${ROOT}/.claude/agents/researcher.md`]: md('researcher', 'visibility:\n  tools:\n    include: [Read, Web*]\n    exclude: [WebFetch]\n'),
       [SCOPE]: JSON.stringify({ loops: { Explore: { tools: { exclude: ['WebFetch'] } } } }),
     });
-    run.sub('r1', 'rr');
+    run.sub('r1', 'researcher');
     run.sub('e1', 'Explore');
-    expect((await run.tool('Bash', { command: 'ls' }, 'r1')).deny).toContain('Tool Bash is not available to a rr agent');
+    expect((await run.tool('Bash', { command: 'ls' }, 'r1')).deny).toContain('Tool Bash is not available to a researcher agent');
     expect((await run.tool('WebFetch', {}, 'r1')).deny).toContain('excludes WebFetch');
     expect(await run.tool('WebSearch', {}, 'r1')).toEqual(RAN);
     expect((await run.tool('WebFetch', {}, 'e1')).deny).toContain(`loops.Explore.tools in ${SCOPE}`);
