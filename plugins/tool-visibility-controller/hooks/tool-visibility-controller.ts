@@ -1,8 +1,8 @@
 import type { EngineInterface, On, Register } from 'claude-code';
-import { levelRow, MAX_RETAINED_ROWS, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
+import { levelRow, PLUGIN_LOG_HOLD_ROWS, pluginLogDir, PluginLogQueue, type PluginLogLevel } from '../src/plugin-log.ts';
 import { BURST_WINDOW_MS, ScreenBurst } from '../src/screen-burst.ts';
 import { AgentTypes } from '../src/agent-types.ts';
-import { hookFailureText, message, missingDefinition, unresolvedLoopText } from '../src/failures.ts';
+import { engineLoopText, hookFailureText, message, missingDefinition, unresolvedLoopText } from '../src/failures.ts';
 import { SpawnCalls } from '../src/spawns.ts';
 import { filterDeferredTools, filterEntries, filterMcpInstructions } from '../src/listings.ts';
 import {
@@ -33,17 +33,19 @@ const LISTINGS = new Set(['agent_listing_delta', 'skill_listing', 'mcp_instructi
 /** How deep command subdirectories are read (`a:b:c`). */
 const COMMAND_DEPTH = 3;
 
-type Logger = { queue: PluginLogQueue; session?: string; warning?: string };
-type Pending = { level: Level; event: string; msg: string; hook: string; detail?: Record<string, unknown>; at: number };
-type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean; pending: Pending[] };
-type Cache = { policy?: Promise<Policy>; missing: Set<string>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; burst: ScreenBurst; burstArmed: boolean };
+type Logger = { session?: string; warning?: string };
+type Pending = { level: PluginLogLevel; event: string; msg: string; hook: string; detail?: Record<string, unknown>; at: number };
+/** `lost` counts rows dropped past the hold before the logger took them; `clockFailing` keeps the clock warning to one row per streak. */
+type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean; clockFailing: boolean; pending: Pending[]; lost: number };
+/** One queue for the module's life: rows a failed final flush kept go out with the next session's first write. */
+type Cache = { policy?: Promise<Policy>; missing: Set<string>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; queue?: PluginLogQueue; burst: ScreenBurst; burstArmed: boolean };
 type Entry = { name: string; kind: string; isLink?: boolean };
 type Read = { name: string; owned: Owned | null };
 
 const PLUGIN = 'tool-visibility-controller';
 
-// The logger's last-resort screen door never interferes with a policy result.
-// Identical lines collapse: a burst shows its first line, then one count.
+// The screen door for error lines and the log's own failing-streak line, never a warning, info or debug row;
+// it never interferes with a policy result. Identical lines collapse: a burst shows its first line, then one count.
 function showLines($: EngineInterface, lines: readonly string[]): void {
   for (const line of lines) {
     try { $.ui.log(line); } catch {
@@ -52,7 +54,7 @@ function showLines($: EngineInterface, lines: readonly string[]): void {
   }
 }
 
-function logFallback($: EngineInterface, cache: Cache, text: string): void {
+function showOnScreen($: EngineInterface, cache: Cache, text: string): void {
   showLines($, cache.burst.offer(text.startsWith(`${PLUGIN}: `) ? text : `${PLUGIN}: ${text}`, Date.now()));
   if (cache.burstArmed || cache.burst.pending() === 0) return;
   cache.burstArmed = true;
@@ -71,13 +73,13 @@ async function loggerOf($: EngineInterface, cache: Cache, state: LogState): Prom
   state.logger ??= (async () => {
     const override = await $.env.get('PLUGIN_LOG_DIR');
     const home = await $.env.get('HOME');
-    const dir = pluginLogDir(override, home, PLUGIN);
+    cache.queue ??= new PluginLogQueue(pluginLogDir(override, home, PLUGIN), PLUGIN);
     let session: string | undefined;
     let warning: string | undefined;
     try { session = await $.session.id(); } catch (error) {
       warning = `session id unavailable: ${message(error)}; session omitted`;
     }
-    return { queue: new PluginLogQueue(dir, PLUGIN, (text) => logFallback($, cache, text)), session, warning };
+    return { session, warning };
   })();
   try {
     return await state.logger;
@@ -88,42 +90,51 @@ async function loggerOf($: EngineInterface, cache: Cache, state: LogState): Prom
   }
 }
 
-// Rows wait in state.pending until the logger exists, and in its queue until a write lands: a stalled
+// Rows wait in state.pending until the logger exists, then in the queue until a write lands: a stalled
 // worker rejects the `$` calls here, and a rejected step keeps what it had not yet handed over.
-// Only the final step (session end or start) gives a row up, with the usual screen fallback.
+// Only the final step (session end or start) gives up what the logger never took, said once on screen.
 async function drainLog($: EngineInterface, cache: Cache, state: LogState, final: boolean): Promise<void> {
-  if (state.pending.length === 0 && (!final || state.logger === undefined)) return;
+  if (state.pending.length === 0 && state.lost === 0 && (!final || state.logger === undefined)) return;
   const logger = await loggerOf($, cache, state);
+  const queue = cache.queue!;
   let clock: number | undefined;
-  let clockFailed = false;
-  try { clock = await $.clock.now(); } catch (error) {
-    clockFailed = true;
-    if (!state.failing) logFallback($, cache, `plugin log clock: ${message(error)}; local time used`);
-  }
+  let clockError: string | undefined;
+  try { clock = await $.clock.now(); } catch (error) { clockError = message(error); }
+  const now = clock ?? Date.now();
   if (logger.warning !== undefined) {
-    logger.queue.add(levelRow({ plugin: PLUGIN, level: 'warning', event: 'log-session-unavailable', msg: logger.warning, where: 'hooks/tool-visibility-controller.ts#loggerOf' }, clock ?? Date.now()));
+    queue.add(levelRow({ plugin: PLUGIN, level: 'warning', event: 'log-session-unavailable', msg: logger.warning, where: 'hooks/tool-visibility-controller.ts#loggerOf' }, now));
     logger.warning = undefined;
   }
-  for (const item of state.pending.splice(0)) {
-    logger.queue.add(levelRow({ plugin: PLUGIN, level: item.level, event: item.event, msg: item.msg, where: `hooks/tool-visibility-controller.ts#${item.hook}`, session: logger.session, detail: item.detail }, clock ?? item.at));
+  if (clockError !== undefined && !state.clockFailing) {
+    queue.add(levelRow({ plugin: PLUGIN, level: 'warning', event: 'log-clock-unavailable', msg: `engine clock unavailable: ${clockError}; rows carry local time`, where: 'hooks/tool-visibility-controller.ts#drainLog', session: logger.session }, now));
   }
-  await logger.queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }), { retain: !final });
-  state.failing = clockFailed;
+  state.clockFailing = clockError !== undefined;
+  if (state.lost > 0) {
+    queue.add(levelRow({ plugin: PLUGIN, level: 'error', event: 'plugin-log-rows-dropped', msg: `${state.lost} unwritten rows were dropped past the ${PLUGIN_LOG_HOLD_ROWS}-row hold`, where: 'hooks/tool-visibility-controller.ts#plog', session: logger.session, detail: { rows: state.lost } }, now));
+    state.lost = 0;
+  }
+  for (const item of state.pending.splice(0)) {
+    queue.add(levelRow({ plugin: PLUGIN, level: item.level, event: item.event, msg: item.msg, where: `hooks/tool-visibility-controller.ts#${item.hook}`, session: logger.session, detail: item.detail }, clock ?? item.at));
+  }
+  const result = await queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }));
+  if (result.screen !== undefined) showOnScreen($, cache, result.screen);
+  state.failing = false;
 }
 
 function logStepFailed($: EngineInterface, cache: Cache, state: LogState, error: unknown, final: boolean): void {
-  if (!state.failing) logFallback($, cache, `plugin log metadata: ${message(error)}; ${final ? 'rows dropped' : 'rows kept for retry'}`);
+  const dropped = final ? state.pending.splice(0).length + state.lost : 0;
+  if (final) state.lost = 0;
+  if (!state.failing) showOnScreen($, cache, `plugin log metadata: ${message(error)}; ${final ? `${dropped} rows dropped` : 'rows kept for retry'}`);
   state.failing = true;
-  if (final) for (const item of state.pending.splice(0)) if (item.level !== 'error') logFallback($, cache, item.msg);
 }
 
-function plog($: EngineInterface, cache: Cache, level: Level, event: string, msg: string, hook: string, detail?: Record<string, unknown>): void {
-  if (level === 'error') logFallback($, cache, msg);
+function plog($: EngineInterface, cache: Cache, level: PluginLogLevel, event: string, msg: string, hook: string, detail?: Record<string, unknown>): void {
+  if (level === 'error') showOnScreen($, cache, msg);
   const state = cache.log;
   state.pending.push({ level, event, msg, hook, detail, at: Date.now() });
-  if (state.pending.length > MAX_RETAINED_ROWS) {
-    const oldest = state.pending.shift()!;
-    if (oldest.level !== 'error') logFallback($, cache, oldest.msg);
+  if (state.pending.length > PLUGIN_LOG_HOLD_ROWS) {
+    state.pending.shift();
+    state.lost += 1;
   }
   state.work = state.work.then(() => drainLog($, cache, state, false)).catch((error) => logStepFailed($, cache, state, error, false));
 }
@@ -132,6 +143,10 @@ function plog($: EngineInterface, cache: Cache, level: Level, event: string, msg
 function finishLog($: EngineInterface, cache: Cache, state: LogState): Promise<void> {
   state.work = state.work.then(() => drainLog($, cache, state, true)).catch((error) => logStepFailed($, cache, state, error, true));
   return state.work;
+}
+
+function newLog(): LogState {
+  return { work: Promise.resolve(), failing: false, clockFailing: false, pending: [], lost: 0 };
 }
 
 function claudeDir(dir: string): string {
@@ -277,12 +292,14 @@ async function loopType($: EngineInterface, cache: Cache, agentId: string | unde
   return cache.types.of(agentId, () => $.agent.list());
 }
 
-// A loop with no type is reported once, not at every listing and every call:
-// the engine's own forks (compaction, memory) send a listing of each kind.
-// Enforcement is skipped, so this is an error even for an engine-owned fork.
+// A loop with no type is reported once, not at every listing and every call. One no agent list row or
+// announcement ever named is the engine's own fork (compaction, memory: the API gives those ids no list row),
+// which no rule governs: a debug row. A sub-agent the engine named without a type goes unenforced: an error.
 function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined, action: string): void {
-  if (!cache.types.firstMiss(String(agentId))) return;
-  plog($, cache, 'error', 'name-unresolved', unresolvedLoopText(String(agentId), action), 'logUnresolved', { agentId, action });
+  const id = String(agentId);
+  if (!cache.types.firstMiss(id)) return;
+  if (cache.types.named(id)) plog($, cache, 'error', 'name-unresolved', unresolvedLoopText(id, action), 'logUnresolved', { agentId, action });
+  else plog($, cache, 'debug', 'engine-loop-unchecked', engineLoopText(id, action), 'logUnresolved', { agentId, action });
 }
 
 function hider(policy: Policy, set: SetName, loop: string): (name: string) => boolean {
@@ -350,13 +367,13 @@ function callTargets(tool: string, skill: unknown): Array<[SetName, string]> {
 }
 
 export const register: Register = (on: On) => {
-  const cache: Cache = { missing: new Set(), types: new AgentTypes(), spawns: new SpawnCalls(), log: { work: Promise.resolve(), failing: false, pending: [] }, logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false };
+  const cache: Cache = { missing: new Set(), types: new AgentTypes(), spawns: new SpawnCalls(), log: newLog(), logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false };
 
   on('session.start', async ($, e, next) => {
     cache.policy = undefined;
     cache.missing.clear();
     cache.logDrain = Promise.all([cache.logDrain, finishLog($, cache, cache.log)]).then(() => {});
-    cache.log = { work: Promise.resolve(), failing: false, pending: [] };
+    cache.log = newLog();
     return next(e);
   });
 

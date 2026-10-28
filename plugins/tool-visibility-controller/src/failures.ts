@@ -17,6 +17,11 @@ export function unresolvedLoopText(agentId: string, action: string): string {
   return `tool-visibility-controller: loop ${agentId} resolves to no agent type while ${action}; proceeding unchecked: its listings, spawns and tool calls are left whole; restore its agent-list entry or SubagentStart type announcement to resume visibility checks`;
 }
 
+/** An engine-owned loop (a fork of its own: compaction, memory) carries an id no agent list row or announcement names; no rule governs it. */
+export function engineLoopText(agentId: string, action: string): string {
+  return `tool-visibility-controller: loop ${agentId} is the engine's own (no agent list row or SubagentStart names it) while ${action}; no visibility rule governs it, its listings, spawns and tool calls are left whole`;
+}
+
 export function hookFailureText(hook: string, failure: Pick<HookFailure, 'kind' | 'message'>, context: string): string {
   return `${hook} failed; proceeding unchecked (${context}; ${failure.kind}: ${failure.message ?? 'engine supplied no failure message'})`;
 }

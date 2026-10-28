@@ -510,6 +510,7 @@ suite('discovery and failure', () => {
 
   it('shows an unresolved identity diagnostic naming the unchecked action and recovery, without restricting work', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' });
+    await run.announce('classic.SubagentStart', 'ghost', '');
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([
@@ -551,8 +552,9 @@ suite('discovery and failure', () => {
     expect(run.logs.join('\n')).toMatch(/EACCES/);
   });
 
-  it('fails open with a visible error when a loop id resolves to no agent', async () => {
+  it('fails open with a visible error when a sub-agent the agent list names resolves to no agent type', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
+    run.sub('ghost', '');
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(await run.spawn('scope-child', 'ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
@@ -561,6 +563,8 @@ suite('discovery and failure', () => {
 
   it('shows an unresolved-loop error once, whatever its listings, spawns and calls', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
+    await run.announce('classic.SubagentStart', 'fork1', '');
+    await run.announce('classic.SubagentStop', 'fork2', '');
     for (const type of ['deferred_tools_delta', 'skill_listing', 'agent_listing_delta', 'mcp_instructions_delta']) await run.attach(type, AGENTS, 'fork1');
     await run.spawn('scope-child', 'fork1');
     await run.tool('Bash', {}, 'fork1');
@@ -568,6 +572,19 @@ suite('discovery and failure', () => {
     await run.attach('agent_listing_delta', AGENTS, 'fork2');
     expect(run.logs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
     expect(run.logs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
+  });
+
+  it('keeps an engine-owned loop, an id no agent list row or announcement names, off screen and out of errors', async () => {
+    const dir = await logTemp();
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    for (let i = 0; i < 2; i++) expect(await run.attach('agent_listing_delta', AGENTS, 'a618e522ea6419016')).toEqual({ text: AGENTS });
+    expect(await run.tool('Bash', {}, 'a618e522ea6419016')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs).toEqual([]);
+    const logs = join(dir, 'tool-visibility-controller');
+    expect(await logRows(logs, 'errors')).toEqual([]);
+    expect(await logRows(logs, 'debug')).toEqual([expect.objectContaining({ level: 'debug', event: 'engine-loop-unchecked', where: 'hooks/tool-visibility-controller.ts#logUnresolved', detail: { agentId: 'a618e522ea6419016', action: 'rewriting agent_listing_delta' } })]);
   });
 
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {
@@ -618,6 +635,7 @@ suite('plugin log adapter', () => {
     const opts: Options = { env, runProcess: realProcess, failRoot: true };
     const run = engine({ ...SCOPED, [SCOPE]: '{ "loops": ' }, opts);
     expect(await run.startSession()).toEqual({});
+    await run.announce('classic.SubagentStart', 'ghost', '');
     expect(await run.tool('Bash', { command: 'SECRET TOOL BODY' })).toEqual(RAN);
     opts.failRoot = false;
     expect(await run.tool('Bash')).toEqual(RAN);
@@ -653,6 +671,7 @@ suite('plugin log adapter', () => {
     const dir = await logTemp();
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
     await run.startSession();
+    await run.announce('classic.SubagentStart', 'ghost', '');
     for (let i = 0; i < 2; i++) {
       expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
       expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
@@ -698,6 +717,18 @@ suite('plugin log adapter', () => {
     expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(2);
   });
 
+  it.each([
+    ['a failing write', { env: { HOME: '/nowhere' }, runProcess: async () => ({ exitCode: 1, stdout: '', stderr: 'disk full' }) }],
+    ['no log directory', { env: {} }],
+  ] as const)('never shows a warning or info row on screen, with %s', async (_, options) => {
+    const run = engine(SCOPED, options as Options);
+    await run.startSession();
+    expect((await run.spawn('scope-child')).deny).toBeDefined();
+    await run.endSession();
+    expect(run.logs.some((line) => /is not available/.test(line))).toBe(false);
+    expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(1);
+  });
+
   it('names the no-home failure explicitly', async () => {
     const run = engine({}, { env: {} });
     await run.startSession();
@@ -726,10 +757,11 @@ suite('plugin log adapter', () => {
     const before = Date.now();
     expect(await run.caught('tool.call', {}, async () => RAN)).toEqual(RAN);
     await run.endSession();
-    expect(run.logs.join('\n')).toContain('clock unreadable');
+    expect(run.logs.join('\n')).not.toContain('clock unreadable');
     const rows = await logRows(join(dir, 'tool-visibility-controller'), 'errors');
     expect(rows).toEqual([expect.objectContaining({ event: 'hook-threw' })]);
     expect(Date.parse(rows[0].ts)).toBeGreaterThanOrEqual(before);
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'warnings')).toEqual([expect.objectContaining({ event: 'log-clock-unavailable', msg: expect.stringContaining('clock unreadable') })]);
   });
 
   it('keeps a row whose logger setup fails and writes it once the setup recovers', async () => {
