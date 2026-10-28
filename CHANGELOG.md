@@ -2,6 +2,17 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Fixed
+
+- The engine's own forks no longer flood the screen with errors. A loop no agent list row or `SubagentStart`/`SubagentStop` announcement ever names (Claude Code's own forks for compaction and memory, which arrive in bursts, for example after `/reload-plugins`) used to show one `resolves to no agent type` error each; it is now a `debug` row (`engine-loop-unchecked`), never on screen. A sub-agent the list or an announcement names without a type is still an error on screen, and one the list names with an empty type is no longer taken for a loop named `""` whose listings were filtered.
+- No warning or info row reaches the screen any more. When the log could not be written, their messages used to fall back to the screen; now only error lines and the log's one failing (or off) notice per streak show, and the rows stay queued for the next write. An unavailable engine clock is a `log-clock-unavailable` warning row instead of a screen line.
+
+### Changed
+
+- The log writer is the shared plugin-log library, vendored byte-identical as `src/plugin-log.ts`: a level file over 20 MiB now keeps five rotated generations (`.1` to `.5`) instead of one, under a lock; a failed batch is kept (up to 2000 rows, up from 1000, the overflow counted in a `plugin-log-rows-dropped` error row) and goes out with the next write, even in the next session; debug rows go to `debug.jsonl`.
+
 ## [0.3.6] — 2026-10-27
 
 ### Fixed
