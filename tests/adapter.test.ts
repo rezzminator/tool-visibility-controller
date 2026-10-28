@@ -587,6 +587,19 @@ suite('discovery and failure', () => {
     expect(await logRows(logs, 'debug')).toEqual([expect.objectContaining({ level: 'debug', event: 'engine-loop-unchecked', where: 'hooks/tool-visibility-controller.ts#logUnresolved', detail: { agentId: 'a618e522ea6419016', action: 'rewriting agent_listing_delta' } })]);
   });
 
+  it('raises the unresolved-loop error for a loop first missed unnamed and announced untyped later', async () => {
+    const dir = await logTemp();
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    expect(await run.tool('Bash', {}, 'late')).toEqual(RAN);
+    await run.announce('classic.SubagentStop', 'late', '');
+    expect(await run.tool('Bash', {}, 'late')).toEqual(RAN);
+    await run.endSession();
+    const logs = join(dir, 'tool-visibility-controller');
+    expect(await logRows(logs, 'debug')).toEqual([expect.objectContaining({ event: 'engine-loop-unchecked' })]);
+    expect(await logRows(logs, 'errors')).toEqual([expect.objectContaining({ event: 'name-unresolved', detail: { agentId: 'late', action: expect.any(String) } })]);
+  });
+
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {
     const run = engine(SCOPED);
     expect(await run.caught('agent.spawn', { subagentType: 'scope-child' }, async () => ({ model: 'm', agentId: 'new' }))).toEqual({ model: 'm', agentId: 'new' });

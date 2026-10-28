@@ -110,7 +110,7 @@ async function drainLog($: EngineInterface, cache: Cache, state: LogState, final
   }
   state.clockFailing = clockError !== undefined;
   if (state.lost > 0) {
-    queue.add(levelRow({ plugin: PLUGIN, level: 'error', event: 'plugin-log-rows-dropped', msg: `${state.lost} unwritten rows were dropped past the ${PLUGIN_LOG_HOLD_ROWS}-row hold`, where: 'hooks/tool-visibility-controller.ts#plog', session: logger.session, detail: { rows: state.lost } }, now));
+    queue.add(levelRow({ plugin: PLUGIN, level: 'error', event: 'plugin-log-rows-dropped', msg: `${state.lost} unwritten ${state.lost === 1 ? 'row was' : 'rows were'} dropped past the ${PLUGIN_LOG_HOLD_ROWS}-row hold`, where: 'hooks/tool-visibility-controller.ts#plog', session: logger.session, detail: { rows: state.lost } }, now));
     state.lost = 0;
   }
   for (const item of state.pending.splice(0)) {
@@ -297,8 +297,10 @@ async function loopType($: EngineInterface, cache: Cache, agentId: string | unde
 // which no rule governs: a debug row. A sub-agent the engine named without a type goes unenforced: an error.
 function logUnresolved($: EngineInterface, cache: Cache, agentId: string | undefined, action: string): void {
   const id = String(agentId);
-  if (!cache.types.firstMiss(id)) return;
-  if (cache.types.named(id)) plog($, cache, 'error', 'name-unresolved', unresolvedLoopText(id, action), 'logUnresolved', { agentId, action });
+  const named = cache.types.named(id);
+  // Latched per outcome: a loop first missed unnamed and named later (a SubagentStop announcement) still raises its error.
+  if (!cache.types.firstMiss(named ? `named:${id}` : id)) return;
+  if (named) plog($, cache, 'error', 'name-unresolved', unresolvedLoopText(id, action), 'logUnresolved', { agentId, action });
   else plog($, cache, 'debug', 'engine-loop-unchecked', engineLoopText(id, action), 'logUnresolved', { agentId, action });
 }
 
