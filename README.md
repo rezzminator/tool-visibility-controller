@@ -64,11 +64,11 @@ Function hooks are experimental; turn them on before Claude Code starts:
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 ```
 
-Install from the repository's own marketplace:
+Install from Professor's marketplace:
 
 ```bash
-claude plugin marketplace add rezzminator/tool-visibility-controller
-claude plugin install tool-visibility-controller@tool-visibility-controller
+claude plugin marketplace add rezzminator/professor
+claude plugin install tool-visibility-controller@professor
 ```
 
 <details>
@@ -77,14 +77,14 @@ claude plugin install tool-visibility-controller@tool-visibility-controller
 Where `claude plugin install --help` lists `--marketplace`, one command adds the marketplace and installs:
 
 ```bash
-claude plugin install tool-visibility-controller --marketplace rezzminator/tool-visibility-controller
+claude plugin install tool-visibility-controller --marketplace rezzminator/professor
 ```
 
 Inside a session:
 
 ```text
-/plugin marketplace add rezzminator/tool-visibility-controller
-/plugin install tool-visibility-controller@tool-visibility-controller
+/plugin marketplace add rezzminator/professor
+/plugin install tool-visibility-controller@professor
 ```
 
 </details>
@@ -148,7 +148,7 @@ A loop may see and invoke an item only when every rule agrees: the item's `visib
 Remove it with:
 
 ```bash
-claude plugin uninstall tool-visibility-controller@tool-visibility-controller
+claude plugin uninstall tool-visibility-controller@professor
 ```
 
 ## 🧠 How it works
