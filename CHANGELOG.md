@@ -8,6 +8,7 @@ Every release of tool-visibility-controller. Versions follow [semantic versionin
 
 - The engine's own forks no longer flood the screen with errors. A loop no agent list row or `SubagentStart`/`SubagentStop` announcement ever names (Claude Code's own forks for compaction and memory, which arrive in bursts, for example after `/reload-plugins`) used to show one `resolves to no agent type` error each; it is now a `debug` row (`engine-loop-unchecked`), never on screen. A sub-agent the list or an announcement names without a type is still an error on screen, and one the list names with an empty type is no longer taken for a loop named `""` whose listings were filtered.
 - No warning or info row reaches the screen any more. When the log could not be written, their messages used to fall back to the screen; now only error lines and the log's one failing (or off) notice per streak show, and the rows stay queued for the next write. An unavailable engine clock is a `log-clock-unavailable` warning row instead of a screen line.
+- **A cancelled log write no longer shows on screen.** When Claude Code abandons a hook mid-write, the shared plugin-log library keeps the rows for the next write, and nothing is lost; it used to print a "plugin log … failed" line. A real write failure is still said once per failing streak.
 
 ### Changed
 
