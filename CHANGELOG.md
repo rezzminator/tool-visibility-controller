@@ -2,7 +2,7 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [0.4.0] — 2026-10-30
 
 ### Fixed
 
@@ -12,7 +12,15 @@ Every release of tool-visibility-controller. Versions follow [semantic versionin
 
 ### Changed
 
-- Installs as `tool-visibility-controller@professor` from the professor marketplace; the repo's own marketplace file is gone.
+- **Breaking for standalone installs: the plugin installs as `tool-visibility-controller@professor` from the professor marketplace; the repo's own marketplace file is gone.** An install made as `tool-visibility-controller@tool-visibility-controller` gets no further updates. To migrate, remove it and install from the professor marketplace:
+
+  ```bash
+  claude plugin uninstall tool-visibility-controller@tool-visibility-controller
+  claude plugin marketplace remove tool-visibility-controller
+  claude plugin marketplace add rezzminator/professor
+  claude plugin install tool-visibility-controller@professor
+  ```
+
 - The log writer is the shared plugin-log library, vendored byte-identical as `src/plugin-log.ts`: a level file over 20 MiB now keeps five rotated generations (`.1` to `.5`) instead of one, under a lock; a failed batch is kept (up to 2000 rows, up from 1000, the overflow counted in a `plugin-log-rows-dropped` error row) and goes out with the next write, even in the next session; debug rows go to `debug.jsonl`.
 
 ## [0.3.6] — 2026-10-27
