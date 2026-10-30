@@ -8,7 +8,7 @@ assignees: ''
 
 **What happened**
 
-<!-- e.g. "the main chat still lists sub-tracer" or "rr's call of mcp__harvester-professor__read was refused" -->
+<!-- e.g. "the main chat still lists sub-tracer" or "researcher's call of mcp__harvester__read was refused" -->
 
 **What you expected**
 

@@ -7,7 +7,7 @@
 **Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop**
 
 [![CI](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/release.yml/badge.svg?branch=develop)](https://github.com/rezzminator/tool-visibility-controller/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.3.6-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://code.claude.com/docs/en/plugins)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -26,7 +26,7 @@ visibility:
   visible-to:
     include: [research-lead]              # only research-lead may see and spawn this agent
   mcp:
-    include: [harvester-professor/*]      # this agent's loop sees only these MCP tools
+    include: [harvester/*]                # this agent's loop sees only these MCP tools
   tools:
     exclude: [Bash]                       # and every built-in tool but Bash
 ---
@@ -64,11 +64,11 @@ Function hooks are experimental; turn them on before Claude Code starts:
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 ```
 
-Install from the repository's own marketplace:
+Install from Professor's marketplace:
 
 ```bash
-claude plugin marketplace add rezzminator/tool-visibility-controller
-claude plugin install tool-visibility-controller@tool-visibility-controller
+claude plugin marketplace add rezzminator/professor
+claude plugin install tool-visibility-controller@professor
 ```
 
 <details>
@@ -77,14 +77,14 @@ claude plugin install tool-visibility-controller@tool-visibility-controller
 Where `claude plugin install --help` lists `--marketplace`, one command adds the marketplace and installs:
 
 ```bash
-claude plugin install tool-visibility-controller --marketplace rezzminator/tool-visibility-controller
+claude plugin install tool-visibility-controller --marketplace rezzminator/professor
 ```
 
 Inside a session:
 
 ```text
-/plugin marketplace add rezzminator/tool-visibility-controller
-/plugin install tool-visibility-controller@tool-visibility-controller
+/plugin marketplace add rezzminator/professor
+/plugin install tool-visibility-controller@professor
 ```
 
 </details>
@@ -100,12 +100,12 @@ In the frontmatter of an agent (`agents/*.md`), a skill (`skills/*/SKILL.md`) or
 ```yaml
 visibility:
   visible-to:            # who may see and invoke THIS item
-    include: [rr, rr-pro, main]          # only these loops; main is the main chat
+    include: [researcher, researcher-pro, main] # only these loops; main is the main chat
     exclude: []                          # every loop but these
   agents:                # what THIS agent's own loop sees (agent files only)
-    include: [sub-rr]
+    include: [sub-researcher]
   skills:  { exclude: [deploy, ops:*] }  # skills and model-invocable commands
-  mcp:     { include: [harvester-professor/*] }   # server, or server/tool
+  mcp:     { include: [harvester/*] }    # server, or server/tool
   tools:   { exclude: [WebFetch, Bash] }          # built-in tools by name
 ```
 
@@ -122,13 +122,13 @@ For what has no frontmatter you own: the main chat, built-in agents, plugin agen
 ```json
 {
   "loops": {
-    "main":    { "mcp": { "exclude": ["harvester-professor/*"] }, "agents": { "exclude": ["Explore"] } },
+    "main":    { "mcp": { "exclude": ["harvester/*"] }, "agents": { "exclude": ["Explore"] } },
     "Explore": { "tools": { "exclude": ["WebFetch"] } }
   },
   "items": {
     "agents": { "Explore": { "visible-to": { "exclude": ["main"] } } },
     "skills": { "docs-kit:pdf": { "visible-to": { "include": ["writer"] } } },
-    "mcp":    { "harvester-professor/*": { "visible-to": { "exclude": ["main"] } } },
+    "mcp":    { "harvester/*": { "visible-to": { "exclude": ["main"] } } },
     "tools":  {}
   }
 }
@@ -148,7 +148,7 @@ A loop may see and invoke an item only when every rule agrees: the item's `visib
 Remove it with:
 
 ```bash
-claude plugin uninstall tool-visibility-controller@tool-visibility-controller
+claude plugin uninstall tool-visibility-controller@professor
 ```
 
 ## 🧠 How it works
@@ -194,15 +194,19 @@ Matches only `reload-plugins`. After `next(e)` finishes or throws, clears `cache
 
 Drains pending plugin log writes.
 
-It fails open: an unreadable file, a loop id that names no agent type (the engine's own forks for compaction and memory carry ids no list names; each reports one diagnostic per loop, however many listings, calls and spawns it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+It fails open: an unreadable file, a sub-agent the session's agent list or a `SubagentStart`/`SubagentStop` announcement names without an agent type (one diagnostic per loop, however many listings, calls and spawns it makes), a hook that throws or overruns its budget, or any other error is logged with its context and leaves the listing, the call and the spawn as they were.
+
+A loop no agent list row or announcement ever names is the engine's own (a fork for compaction or memory: Claude Code gives those ids no list row and fires no `SubagentStart` for them). No visibility rule governs it: its listings, calls and spawns are left whole, and it is recorded once per loop as a debug row, never on screen. After `/reload-plugins` the controller starts with no announcements, so a workflow agent announced before the reload is taken for an engine loop.
 
 When the loop's identity is unresolved, the diagnostic names the action that could not be checked (a listing, a call or a spawn) and how to recover: make the loop's type known through the session's agent list or a `SubagentStart` announcement. A hook that throws shows on screen the hook name, the kind and reason of the failure, the item or loop it concerned and the unchecked fallback that ran. Fail-open is a deliberate choice, not fail-closed enforcement: an unchecked action runs.
 
 ### Logs
 
-Errors, warnings and narrowly scoped info events append to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/tool-visibility-controller/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/tool-visibility-controller/logs/`. Rows identify the event, component and available session id; they never include prompt, transcript or tool-input bodies.
+Errors, warnings, narrowly scoped info events and debug events append to `errors.jsonl`, `warnings.jsonl`, `info.jsonl` and `debug.jsonl` under `$PLUGIN_LOG_DIR/tool-visibility-controller/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/tool-visibility-controller/logs/`. Rows identify the event, component and available session id; they never include prompt, transcript or tool-input bodies.
 
-Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes; writes run off the policy path, with a five-second process timeout; session end drains pending writes. A file over 20 MiB moves to `.1`, replacing the previous `.1`, and adds a `log-capped` warning. Concurrent cap renames are not locked. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write; the failed rows (at most 1000) and rows whose clock, environment or session lookup failed are kept and written with the next row or at session end, and only the last write at session end or start gives a row up. Identical screen lines collapse: the first shows, repeats are counted, and one `(and N more)` line follows after 30 seconds, on a timer and at session end. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. Errors always appear on screen as well as in the plugin log. Warning and info diagnostics stay in the plugin log only; if no log directory can be resolved or a write fails, their messages fall back to the screen so they are not lost. The failing log's own notice stays visible. An unavailable session id is a warning (the row is still written without it); a file-cap notice is also log-only. Unreadable definitions or scope files, malformed or misplaced visibility blocks, a skipped user tier, an unresolved loop type, failed checks or rewrites, and fail-open hook catches are errors because enforcement is incomplete. Denial reasons returned to the model are deliberate product output, not diagnostics, and are unchanged.
+Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes (0700 and 0600); writes run off the policy path, with a five-second process timeout; session end drains pending writes. A level file over 20 MiB moves to `.1`, older generations shifting up to `.5`, and a `log-capped` warning follows; a lock in the log directory serializes the move. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. The failed rows are kept and written with the next write, in this session or the next: at most 2000, past which the oldest go and the next successful write records how many in a `plugin-log-rows-dropped` error row. Rows whose environment or session lookup failed wait the same way, and only the last write at session end or start gives those up, said once. Identical screen lines collapse: the first shows, repeats are counted, and one `(and N more)` line follows after 30 seconds, on a timer and at session end. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. The screen shows only errors and the log's own failing or off notice: errors always appear on screen as well as in the plugin log; warning, info and debug rows go only to their files, or nowhere when the log cannot be written. An unavailable session id or engine clock is a warning (the row is still written, without the session or with local time); a file-cap notice is also log-only. Unreadable definitions or scope files, malformed or misplaced visibility blocks, a skipped user tier, a sub-agent with no resolvable type, failed checks or rewrites, and fail-open hook catches are errors because enforcement is incomplete; an engine-owned loop is a debug row. Denial reasons returned to the model are deliberate product output, not diagnostics, and are unchanged.
+
+The log writer is a vendored copy of the shared plugin-log library (`src/plugin-log.ts`), kept byte-identical to its canonical source; it is plain source with no runtime dependency.
 
 ## ⚠️ Limits
 

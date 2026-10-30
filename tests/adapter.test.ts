@@ -29,9 +29,9 @@ const AGENTS = [
 const WITHOUT_CHILD = AGENTS.replace('- scope-child: Child. (Tools: Read)\n', '');
 
 const SKILLS = ['The following skills are available for use with the Skill tool:', '', '- greet: Greets.', '- kit:cmd: A nested command.', '- other: Other.'].join('\n');
-const MCP = ['# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## harvester-professor', 'Read a web page → read.', '', '## chat-professor', 'Message a chat → call.', '', '## docs', 'Docs.'].join('\n');
-const DEFERRED = ['The following deferred tools are now available via ToolSearch:', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__docs__read'].join('\n');
-const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester-professor__search_web', 'mcp__harvester-professor__read', 'mcp__chat-professor__ls', 'mcp__chat-professor__call', 'mcp__docs__read', 'mcp__my__srv__read'];
+const MCP = ['# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## harvester', 'Read a web page → read.', '', '## chat', 'Message a chat → call.', '', '## docs', 'Docs.'].join('\n');
+const DEFERRED = ['The following deferred tools are now available via ToolSearch:', 'WebFetch', 'mcp__harvester__search_web', 'mcp__docs__read'].join('\n');
+const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester__search_web', 'mcp__harvester__read', 'mcp__chat__ls', 'mcp__chat__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
 type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
@@ -347,34 +347,34 @@ suite('skills and commands', () => {
 
 suite('MCP', () => {
   const FILES = {
-    [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['harvester-professor/*'] } } } }),
-    [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  mcp:\n    include: [harvester-professor/search_web]\n'),
+    [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['harvester/*'] } } } }),
+    [`${ROOT}/.claude/agents/researcher.md`]: md('researcher', 'visibility:\n  mcp:\n    include: [harvester/search_web]\n'),
   };
 
   it('refuses an MCP tool call by the loop rules and lets an allowed one through', async () => {
     const run = engine(FILES);
-    run.sub('r1', 'rr');
-    expect((await run.tool('mcp__harvester-professor__search_web', { query: 'x' })).deny).toContain(`loops.main.mcp in ${SCOPE} excludes harvester-professor/*`);
-    expect(await run.tool('mcp__harvester-professor__search_web', { query: 'x' }, 'r1')).toEqual(RAN);
-    expect((await run.tool('mcp__docs__read', {}, 'r1')).deny).toContain('admits only harvester-professor/search_web');
+    run.sub('r1', 'researcher');
+    expect((await run.tool('mcp__harvester__search_web', { query: 'x' })).deny).toContain(`loops.main.mcp in ${SCOPE} excludes harvester/*`);
+    expect(await run.tool('mcp__harvester__search_web', { query: 'x' }, 'r1')).toEqual(RAN);
+    expect((await run.tool('mcp__docs__read', {}, 'r1')).deny).toContain('admits only harvester/search_web');
     expect(await run.tool('mcp__docs__read', {})).toEqual(RAN);
-    expect(await run.tool('mcp__chat-professor__call', { target: 'scratch', message: 'hello' })).toEqual(RAN);
+    expect(await run.tool('mcp__chat__call', { target: 'scratch', message: 'hello' })).toEqual(RAN);
   });
 
   it("drops a server's instructions only for a loop that may use none of its tools", async () => {
     const run = engine(FILES);
-    run.sub('r1', 'rr');
-    expect(await run.attach('mcp_instructions_delta', MCP)).toEqual({ text: MCP.replace('## harvester-professor\nRead a web page → read.\n\n', '') });
-    expect(await run.attach('mcp_instructions_delta', MCP, 'r1')).toEqual({ text: MCP.replace('\n\n## chat-professor\nMessage a chat → call.', '').replace('\n\n## docs\nDocs.', '') });
+    run.sub('r1', 'researcher');
+    expect(await run.attach('mcp_instructions_delta', MCP)).toEqual({ text: MCP.replace('## harvester\nRead a web page → read.\n\n', '') });
+    expect(await run.attach('mcp_instructions_delta', MCP, 'r1')).toEqual({ text: MCP.replace('\n\n## chat\nMessage a chat → call.', '').replace('\n\n## docs\nDocs.', '') });
     const spaced = engine({ [SCOPE]: JSON.stringify({ loops: { main: { mcp: { exclude: ['my  srv'] } } } }) });
     expect(await spaced.attach('mcp_instructions_delta', `${MCP}\n\n## my  srv\nMine.`)).toEqual({ text: MCP });
     expect((await spaced.tool('mcp__my__srv__read', {})).deny).toContain('excludes my  srv');
   });
 
   it('hides MCP and built-in tools from the deferred list per loop', async () => {
-    const run = engine({ ...FILES, [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  tools:\n    exclude: [WebFetch]\n') });
-    run.sub('r1', 'rr');
-    expect(await run.attach('deferred_tools_delta', DEFERRED)).toEqual({ text: DEFERRED.replace('mcp__harvester-professor__search_web\n', '') });
+    const run = engine({ ...FILES, [`${ROOT}/.claude/agents/researcher.md`]: md('researcher', 'visibility:\n  tools:\n    exclude: [WebFetch]\n') });
+    run.sub('r1', 'researcher');
+    expect(await run.attach('deferred_tools_delta', DEFERRED)).toEqual({ text: DEFERRED.replace('mcp__harvester__search_web\n', '') });
     expect(await run.attach('deferred_tools_delta', DEFERRED, 'r1')).toEqual({ text: DEFERRED.replace('WebFetch\n', '') });
   });
 });
@@ -382,12 +382,12 @@ suite('MCP', () => {
 suite('built-in tools', () => {
   it("refuses a built-in tool by an agent's tools block and by a scope-file loop rule", async () => {
     const run = engine({
-      [`${ROOT}/.claude/agents/rr.md`]: md('rr', 'visibility:\n  tools:\n    include: [Read, Web*]\n    exclude: [WebFetch]\n'),
+      [`${ROOT}/.claude/agents/researcher.md`]: md('researcher', 'visibility:\n  tools:\n    include: [Read, Web*]\n    exclude: [WebFetch]\n'),
       [SCOPE]: JSON.stringify({ loops: { Explore: { tools: { exclude: ['WebFetch'] } } } }),
     });
-    run.sub('r1', 'rr');
+    run.sub('r1', 'researcher');
     run.sub('e1', 'Explore');
-    expect((await run.tool('Bash', { command: 'ls' }, 'r1')).deny).toContain('Tool Bash is not available to a rr agent');
+    expect((await run.tool('Bash', { command: 'ls' }, 'r1')).deny).toContain('Tool Bash is not available to a researcher agent');
     expect((await run.tool('WebFetch', {}, 'r1')).deny).toContain('excludes WebFetch');
     expect(await run.tool('WebSearch', {}, 'r1')).toEqual(RAN);
     expect((await run.tool('WebFetch', {}, 'e1')).deny).toContain(`loops.Explore.tools in ${SCOPE}`);
@@ -510,6 +510,7 @@ suite('discovery and failure', () => {
 
   it('shows an unresolved identity diagnostic naming the unchecked action and recovery, without restricting work', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' });
+    await run.announce('classic.SubagentStart', 'ghost', '');
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(run.logs.filter((line) => /no agent type/.test(line))).toEqual([
@@ -551,8 +552,9 @@ suite('discovery and failure', () => {
     expect(run.logs.join('\n')).toMatch(/EACCES/);
   });
 
-  it('fails open with a visible error when a loop id resolves to no agent', async () => {
+  it('fails open with a visible error when a sub-agent the agent list names resolves to no agent type', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
+    run.sub('ghost', '');
     expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
     expect(await run.spawn('scope-child', 'ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
@@ -561,6 +563,8 @@ suite('discovery and failure', () => {
 
   it('shows an unresolved-loop error once, whatever its listings, spawns and calls', async () => {
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' });
+    await run.announce('classic.SubagentStart', 'fork1', '');
+    await run.announce('classic.SubagentStop', 'fork2', '');
     for (const type of ['deferred_tools_delta', 'skill_listing', 'agent_listing_delta', 'mcp_instructions_delta']) await run.attach(type, AGENTS, 'fork1');
     await run.spawn('scope-child', 'fork1');
     await run.tool('Bash', {}, 'fork1');
@@ -568,6 +572,32 @@ suite('discovery and failure', () => {
     await run.attach('agent_listing_delta', AGENTS, 'fork2');
     expect(run.logs.filter((line) => line.includes('fork1') && /no agent type/.test(line))).toHaveLength(1);
     expect(run.logs.filter((line) => line.includes('fork2') && /no agent type/.test(line))).toHaveLength(1);
+  });
+
+  it('keeps an engine-owned loop, an id no agent list row or announcement names, off screen and out of errors', async () => {
+    const dir = await logTemp();
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    for (let i = 0; i < 2; i++) expect(await run.attach('agent_listing_delta', AGENTS, 'a618e522ea6419016')).toEqual({ text: AGENTS });
+    expect(await run.tool('Bash', {}, 'a618e522ea6419016')).toEqual(RAN);
+    await run.endSession();
+    expect(run.logs).toEqual([]);
+    const logs = join(dir, 'tool-visibility-controller');
+    expect(await logRows(logs, 'errors')).toEqual([]);
+    expect(await logRows(logs, 'debug')).toEqual([expect.objectContaining({ level: 'debug', event: 'engine-loop-unchecked', where: 'hooks/tool-visibility-controller.ts#logUnresolved', detail: { agentId: 'a618e522ea6419016', action: 'rewriting agent_listing_delta' } })]);
+  });
+
+  it('raises the unresolved-loop error for a loop first missed unnamed and announced untyped later', async () => {
+    const dir = await logTemp();
+    const run = engine({ ...SCOPED, [SCOPE]: '{"loops": {"main": {"tools": {"exclude": ["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    await run.startSession();
+    expect(await run.tool('Bash', {}, 'late')).toEqual(RAN);
+    await run.announce('classic.SubagentStop', 'late', '');
+    expect(await run.tool('Bash', {}, 'late')).toEqual(RAN);
+    await run.endSession();
+    const logs = join(dir, 'tool-visibility-controller');
+    expect(await logRows(logs, 'debug')).toEqual([expect.objectContaining({ event: 'engine-loop-unchecked' })]);
+    expect(await logRows(logs, 'errors')).toEqual([expect.objectContaining({ event: 'name-unresolved', detail: { agentId: 'late', action: expect.any(String) } })]);
   });
 
   it('lets the call and the spawn through when the hook throws or overruns its budget', async () => {
@@ -618,6 +648,7 @@ suite('plugin log adapter', () => {
     const opts: Options = { env, runProcess: realProcess, failRoot: true };
     const run = engine({ ...SCOPED, [SCOPE]: '{ "loops": ' }, opts);
     expect(await run.startSession()).toEqual({});
+    await run.announce('classic.SubagentStart', 'ghost', '');
     expect(await run.tool('Bash', { command: 'SECRET TOOL BODY' })).toEqual(RAN);
     opts.failRoot = false;
     expect(await run.tool('Bash')).toEqual(RAN);
@@ -653,6 +684,7 @@ suite('plugin log adapter', () => {
     const dir = await logTemp();
     const run = engine({ ...SCOPED, [SCOPE]: '{"loops":{"main":{"tools":{"exclude":["Bash"]}}}}' }, { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
     await run.startSession();
+    await run.announce('classic.SubagentStart', 'ghost', '');
     for (let i = 0; i < 2; i++) {
       expect(await run.attach('agent_listing_delta', AGENTS, 'ghost')).toEqual({ text: AGENTS });
       expect(await run.tool('Bash', {}, 'ghost')).toEqual(RAN);
@@ -698,6 +730,18 @@ suite('plugin log adapter', () => {
     expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(2);
   });
 
+  it.each([
+    ['a failing write', { env: { HOME: '/nowhere' }, runProcess: async () => ({ exitCode: 1, stdout: '', stderr: 'disk full' }) }],
+    ['no log directory', { env: {} }],
+  ] as const)('never shows a warning or info row on screen, with %s', async (_, options) => {
+    const run = engine(SCOPED, options as Options);
+    await run.startSession();
+    expect((await run.spawn('scope-child')).deny).toBeDefined();
+    await run.endSession();
+    expect(run.logs.some((line) => /is not available/.test(line))).toBe(false);
+    expect(run.logs.filter((line) => line.includes('plugin log '))).toHaveLength(1);
+  });
+
   it('names the no-home failure explicitly', async () => {
     const run = engine({}, { env: {} });
     await run.startSession();
@@ -726,10 +770,11 @@ suite('plugin log adapter', () => {
     const before = Date.now();
     expect(await run.caught('tool.call', {}, async () => RAN)).toEqual(RAN);
     await run.endSession();
-    expect(run.logs.join('\n')).toContain('clock unreadable');
+    expect(run.logs.join('\n')).not.toContain('clock unreadable');
     const rows = await logRows(join(dir, 'tool-visibility-controller'), 'errors');
     expect(rows).toEqual([expect.objectContaining({ event: 'hook-threw' })]);
     expect(Date.parse(rows[0].ts)).toBeGreaterThanOrEqual(before);
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'warnings')).toEqual([expect.objectContaining({ event: 'log-clock-unavailable', msg: expect.stringContaining('clock unreadable') })]);
   });
 
   it('keeps a row whose logger setup fails and writes it once the setup recovers', async () => {

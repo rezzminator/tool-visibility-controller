@@ -11,7 +11,7 @@ its listings and may invoke. `README.md` is the behavioural spec.
 - `plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts`: the adapter, the only file that touches `$`: it reads the definitions and scope files, resolves a loop's agent type, and wires `prompt.attachment`, `agent.spawn` and `tool.call` to `src/`.
 - `plugins/tool-visibility-controller/src/`: every decision, pure and unit-tested — `visibility.ts` reads the frontmatter field, `policy.ts` matches names and decides who may use what, `listings.ts` rewrites the listings; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
-- `plugins/tool-visibility-controller/.claude-plugin/`: `plugin.json` (the manifest) and `icon.svg`; the root `.claude-plugin/marketplace.json` makes the repo its own marketplace, with a `git-subdir` source pinned to `main`.
+- `plugins/tool-visibility-controller/.claude-plugin/`: `plugin.json` (the manifest) and `icon.svg`; the plugin installs as `tool-visibility-controller@professor`.
 
 ## Commands
 
@@ -23,14 +23,14 @@ its listings and may invoke. `README.md` is the behavioural spec.
 - An error never holds a call or a spawn, nor alters a listing: log it with context and leave the listing whole and the call going through.
 - A refusal always returns a `deny` naming the item, the rule with its file, and what to do instead; a malformed block is logged with its file and reason and only that block ignored, never silently dropped.
 - The listing filter keeps every byte it does not remove: the same input gives the same output, so the prompt cache holds.
-- A version bump moves `plugins/tool-visibility-controller/.claude-plugin/plugin.json`, `marketplace.json`, `package.json`, `package-lock.json` and the README badge together; installed copies update only on a new version.
+- A version bump moves `plugins/tool-visibility-controller/.claude-plugin/plugin.json`, `package.json`, `package-lock.json` and the README badge together; installed copies update only on a new version.
 - Public repo: no machine-absolute paths, personal data or private project names in a tracked file.
 - `$` is passed only to functions declared at the top level of the hooks file and always spelled `$.noun.event(...)`: Claude Code checks this statically and otherwise loads the module with zero hooks. `npm run validate:plugin` catches it.
 
 ## Branches and releases
 
 - `develop` is the default branch: every change lands there, by a commit or a pull request, and no CI runs on a push. `.github/workflows/release.yml` runs on the `develop → main` pull request only. `develop` is protected by the ruleset `develop keeps its history`: never force-push or delete it.
-- `main` is release-only (ruleset `main is release-only`). It moves only by merging the `develop → main` pull request, with a merge commit and never a squash, so both branches share one history, and only after `check` and `release` pass: never a direct push, never an admin override. The marketplace installs the plugin from `main` (`git-subdir`, `ref: main`), so users only ever get a released version.
+- `main` is release-only (ruleset `main is release-only`). It moves only by merging the `develop → main` pull request, with a merge commit and never a squash, so both branches share one history, and only after `check` and `release` pass: never a direct push, never an admin override. Professor's marketplace installs the plugin from `main` (`git-subdir`, `ref: main`), so users only ever get a released version.
 - A release, in order:
   1. On `develop`: bump the version in all four places, and move `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — date`. Every merge into `main` publishes, so a pre-release suffix (`-dev.N`, `-alpha`) becomes the real release version here.
   2. `make release-check` passes, after `git fetch origin main`.

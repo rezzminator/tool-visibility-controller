@@ -40,6 +40,15 @@ suite('AgentTypes', () => {
     expect(await types.of('a1', async () => [])).toBeUndefined();
   });
 
+  it('names an id a list row or an announcement named, typed or not, and no other: an engine loop', async () => {
+    const types = new AgentTypes();
+    types.learn('wf1', '');
+    expect(await types.of('wf1', async () => [])).toBeUndefined();
+    expect(await types.of('ls1', async () => [{ id: 'ls1', type: '' }])).toBeUndefined();
+    expect(await types.of('fork1', async () => [])).toBeUndefined();
+    expect([types.named('wf1'), types.named('ls1'), types.named('fork1'), types.named('')]).toEqual([true, true, false, false]);
+  });
+
   it('reports an unresolved loop once per id', () => {
     const types = new AgentTypes();
     expect([types.firstMiss('fork1'), types.firstMiss('fork1'), types.firstMiss('fork2'), types.firstMiss('fork1')]).toEqual([true, false, true, false]);
