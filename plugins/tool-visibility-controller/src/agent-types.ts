@@ -1,5 +1,7 @@
 // Each loop's agent type by id, pure: who a loop is, and which loops were
 // already reported as nobody.
+// This file is a vendored copy of the plugin-log canonical source (Professor's plugins/plugin-log/ts/agent-types.ts),
+// kept byte-identical in every plugin by a sync check: change the canonical source, then re-vendor every copy.
 
 /**
  * Each agent loop's type by id. The session's agent list comes first, once
