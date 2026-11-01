@@ -1,5 +1,6 @@
 // Each loop's agent type by id, pure: who a loop is, and which loops were
 // already reported as nobody.
+// This is tool-visibility-controller's own code; edit it here.
 
 /**
  * Each agent loop's type by id. The session's agent list comes first, once
