@@ -29,10 +29,18 @@ export class AgentTypes {
     return this.seen.has(id);
   }
 
-  async of(id: string, list: () => Promise<readonly { id: string; type: string }[]>): Promise<string | undefined> {
+  /** A failed list is handed to `failed` and the id takes its announced type, as one no row names does. */
+  async of(id: string, list: () => Promise<readonly { id: string; type: string }[]>, failed: (error: unknown) => void): Promise<string | undefined> {
     const known = this.listed.get(id);
     if (known) return known;
-    const agent = (await list()).find((info) => info.id === id);
+    let rows: readonly { id: string; type: string }[];
+    try {
+      rows = await list();
+    } catch (error) {
+      failed(error);
+      return this.announced.get(id);
+    }
+    const agent = rows.find((info) => info.id === id);
     if (agent) this.seen.add(id);
     if (agent?.type) {
       this.listed.set(id, agent.type);

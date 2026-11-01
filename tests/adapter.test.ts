@@ -34,7 +34,7 @@ const DEFERRED = ['The following deferred tools are now available via ToolSearch
 const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester__search_web', 'mcp__harvester__read', 'mcp__chat__ls', 'mcp__chat__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
-type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
+type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; failListAt?: string; failAgentList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
 
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
@@ -56,7 +56,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
       exists: async (path: string) => path in files || under(path).length > 0,
       list: async (path: string) => {
         lists += 1;
-        if (options.failList) throw new Error(`EACCES: permission denied, scandir '${path}'`);
+        if (options.failList || path === options.failListAt) throw new Error(`EACCES: permission denied, scandir '${path}'`);
         const names = new Map<string, string>();
         for (const f of under(path)) {
           const rest = f.slice(path.length + 1);
@@ -74,7 +74,7 @@ function engine(files: Record<string, string>, options: Options = {}) {
         return text;
       },
     },
-    agent: { list: async () => agents },
+    agent: { list: async () => { if (options.failAgentList) throw new Error('agent list unavailable'); return agents; } },
     tool: { list: async () => TOOLS.map((name) => ({ name, description: '' })) },
     ui: { log: (line: string, opts?: { to?: string }) => (opts?.to === 'debug' ? debugs : logs).push(line) },
   };
@@ -131,6 +131,19 @@ suite('agents', () => {
     expect(await run.attach('agent_listing_delta', AGENTS)).toEqual({ text: WITHOUT_CHILD });
     expect(await run.attach('agent_listing_delta', AGENTS, 'gp1')).toEqual({ text: WITHOUT_CHILD });
     expect(await run.attach('agent_listing_delta', AGENTS, 'par1')).toEqual({ text: AGENTS });
+  });
+
+  it('takes the type SubagentStart announced when the agent list fails, and logs the failure once per loop', async () => {
+    const run = engine(SCOPED, { failAgentList: true });
+    await run.announce('classic.SubagentStart', 'wf1', 'general-purpose');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'wf1')).toEqual({ text: WITHOUT_CHILD });
+    expect((await run.spawn('scope-child', 'wf1')).deny).toContain('Agent type scope-child is not available to a general-purpose agent');
+    expect(await run.attach('agent_listing_delta', AGENTS, 'fork1')).toEqual({ text: AGENTS });
+    expect(await run.attach('agent_listing_delta', AGENTS, 'fork1')).toEqual({ text: AGENTS });
+    expect(run.logs).toEqual([
+      'tool-visibility-controller: listing agents failed: agent list unavailable while rewriting agent_listing_delta; loop wf1 takes its announced type general-purpose',
+      'tool-visibility-controller: listing agents failed: agent list unavailable while rewriting agent_listing_delta; loop fork1 is treated as unknown',
+    ]);
   });
 
   it('applies the policy to an agent only SubagentStart or SubagentStop names, as a workflow run or a resumed agent has', async () => {
@@ -329,6 +342,47 @@ suite('skills and commands', () => {
     expect((await run.tool('Skill', { skill: '/kit:cmd' })).deny).toContain('Skill kit:cmd is not available');
     expect(await run.tool('Skill', { skill: 'greet' }, 'h1')).toEqual(RAN);
     expect(await run.tool('Skill', { skill: 'other' })).toEqual(RAN);
+  });
+
+  it('logs a Skill call that names no skill and lets it through, the Skill tool itself checked', async () => {
+    const dir = await logTemp();
+    const run = engine(FILES, { env: { HOME, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    expect(await run.tool('Skill', { skill: '  ' })).toEqual(RAN);
+    expect(await run.tool('Skill', { skill: 7 }, 'h1')).toEqual(RAN);
+    await run.endSession();
+    expect((await logRows(join(dir, 'tool-visibility-controller'), 'warnings')).map((row) => [row.event, row.msg])).toEqual([
+      ['skill-unnamed', 'tool-visibility-controller: a Skill call from loop main names no skill (its skill argument is blank); only the Skill tool itself is checked'],
+      ['skill-unnamed', 'tool-visibility-controller: a Skill call from loop h1 names no skill (its skill argument is a number); only the Skill tool itself is checked'],
+    ]);
+  });
+
+  it('reads commands three directories deep and logs each directory past that it does not read', async () => {
+    const deep = `${ROOT}/.claude/commands/a/b/c`;
+    const run = engine({
+      [`${deep}/x.md`]: md('x', 'visibility:\n  visible-to:\n    include: [helper]\n'),
+      [`${deep}/d/y.md`]: md('y', 'visibility:\n  visible-to:\n    include: [helper]\n'),
+    });
+    expect((await run.tool('Skill', { skill: 'a:b:c:x' })).deny).toContain('Skill a:b:c:x is not available');
+    expect(await run.tool('Skill', { skill: 'a:b:c:d:y' })).toEqual(RAN);
+    expect(run.logs).toEqual([`tool-visibility-controller: ${deep}/d is deeper than 3 command directories and is not read; a visibility rule in its commands is not enforced`]);
+  });
+
+  it('logs a skipped command directory only when it holds a command file below it or could not be checked', async () => {
+    const dir = await logTemp();
+    const deep = `${ROOT}/.claude/commands/a/b/c`;
+    const run = engine({
+      [`${deep}/x.md`]: md('x', 'visibility:\n  visible-to:\n    include: [helper]\n'),
+      [`${deep}/nested/m/z.md`]: md('z'),
+      [`${deep}/notes/readme.txt`]: 'no command here',
+      [`${deep}/notes/inner/more.txt`]: 'nor here',
+      [`${deep}/locked/readme.txt`]: 'unlistable',
+    }, { env: { HOME, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failListAt: `${deep}/locked` });
+    expect((await run.tool('Skill', { skill: 'a:b:c:x' })).deny).toContain('Skill a:b:c:x is not available');
+    await run.endSession();
+    expect((await logRows(join(dir, 'tool-visibility-controller'), 'errors')).map((row) => [row.event, row.detail])).toEqual([
+      ['command-dir-skipped', { path: `${deep}/nested`, depth: 3 }],
+      ['command-dir-skipped', { path: `${deep}/locked`, depth: 3, error: `${deep}/locked: EACCES: permission denied, scandir '${deep}/locked'` }],
+    ]);
   });
 
   it("applies an agent's skills block, plugin skills by plugin:name", async () => {
@@ -788,6 +842,23 @@ suite('plugin log adapter', () => {
     await run.caught('agent.spawn', {}, async () => RAN);
     await run.endSession();
     expect((await logRows(join(dir, 'tool-visibility-controller'), 'errors')).map((row) => row.where)).toEqual(['hooks/tool-visibility-controller.ts#tool.call', 'hooks/tool-visibility-controller.ts#agent.spawn']);
+  });
+
+  it('carries a row the final write of a replaced session could not take into the next session, its session unknown', async () => {
+    const dir = await logTemp();
+    const opts: Options = { env: { HOME: dir, PLUGIN_LOG_DIR: dir }, failEnv: true, runProcess: realProcess };
+    const run = engine({}, opts);
+    await run.caught('tool.call', {}, async () => RAN);
+    await run.startSession();
+    await new Promise((resolve) => setImmediate(resolve));
+    opts.failEnv = false;
+    await run.caught('agent.spawn', {}, async () => RAN);
+    await run.endSession();
+    expect((await logRows(join(dir, 'tool-visibility-controller'), 'errors')).map((row) => [row.where, row.session])).toEqual([
+      ['hooks/tool-visibility-controller.ts#tool.call', undefined],
+      ['hooks/tool-visibility-controller.ts#agent.spawn', '5f0c2a'],
+    ]);
+    expect(run.logs.filter((line) => line.includes('plugin log metadata'))).toEqual(['tool-visibility-controller: plugin log metadata: env unreadable; rows kept for retry']);
   });
 
   it('shows a burst of identical hook failures once with a summary, and every row still lands in errors.jsonl', async () => {

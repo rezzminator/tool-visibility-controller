@@ -2,7 +2,7 @@ import type { EngineInterface, On, Register } from 'claude-code';
 import { levelRow, PLUGIN_LOG_HOLD_ROWS, pluginLogDir, PluginLogQueue, type PluginLogLevel } from '../src/plugin-log.ts';
 import { BURST_WINDOW_MS, ScreenBurst } from '../src/screen-burst.ts';
 import { AgentTypes } from '../src/agent-types.ts';
-import { engineLoopText, hookFailureText, message, missingDefinition, unresolvedLoopText } from '../src/failures.ts';
+import { agentListFailedText, engineLoopText, hookFailureText, message, missingDefinition, skillUnnamedText, unresolvedLoopText } from '../src/failures.ts';
 import { SpawnCalls } from '../src/spawns.ts';
 import { filterDeferredTools, filterEntries, filterMcpInstructions } from '../src/listings.ts';
 import {
@@ -32,9 +32,12 @@ const LISTINGS = new Set(['agent_listing_delta', 'skill_listing', 'mcp_instructi
 
 /** How deep command subdirectories are read (`a:b:c`). */
 const COMMAND_DEPTH = 3;
+/** How many directory levels the check of a skipped command directory descends; past it the directory counts as unread. */
+const PROBE_DEPTH = 8;
 
 type Logger = { session?: string; warning?: string };
-type Pending = { level: PluginLogLevel; event: string; msg: string; hook: string; detail?: Record<string, unknown>; at: number };
+/** `carried`: a row a final step could not write, kept for the next one; its session is unknown. */
+type Pending = { level: PluginLogLevel; event: string; msg: string; hook: string; detail?: Record<string, unknown>; at: number; carried?: boolean };
 /** `lost` counts rows dropped past the hold before the logger took them; `clockFailing` keeps the clock warning to one row per streak. */
 type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean; clockFailing: boolean; pending: Pending[]; lost: number };
 /** One queue for the module's life: rows a failed final flush kept go out with the next session's first write. */
@@ -114,17 +117,27 @@ async function drainLog($: EngineInterface, cache: Cache, state: LogState, final
     state.lost = 0;
   }
   for (const item of state.pending.splice(0)) {
-    queue.add(levelRow({ plugin: PLUGIN, level: item.level, event: item.event, msg: item.msg, where: `hooks/tool-visibility-controller.ts#${item.hook}`, session: logger.session, detail: item.detail }, clock ?? item.at));
+    queue.add(levelRow({ plugin: PLUGIN, level: item.level, event: item.event, msg: item.msg, where: `hooks/tool-visibility-controller.ts#${item.hook}`, session: item.carried ? undefined : logger.session, detail: item.detail }, item.carried ? item.at : clock ?? item.at));
   }
   const result = await queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }));
   if (result.screen !== undefined) showOnScreen($, cache, result.screen);
   state.failing = false;
 }
 
+// A final step keeps what it could not write for the next one: a replaced state hands it to the live state.
 function logStepFailed($: EngineInterface, cache: Cache, state: LogState, error: unknown, final: boolean): void {
-  const dropped = final ? state.pending.splice(0).length + state.lost : 0;
-  if (final) state.lost = 0;
-  if (!state.failing) showOnScreen($, cache, `plugin log metadata: ${message(error)}; ${final ? `${dropped} rows dropped` : 'rows kept for retry'}`);
+  if (final) {
+    for (const item of state.pending) item.carried = true;
+    const live = cache.log;
+    if (live !== state) {
+      live.pending.unshift(...state.pending.splice(0));
+      const over = Math.max(0, live.pending.length - PLUGIN_LOG_HOLD_ROWS);
+      live.pending.splice(0, over);
+      live.lost += state.lost + over;
+      state.lost = 0;
+    }
+  }
+  if (!state.failing) showOnScreen($, cache, `plugin log metadata: ${message(error)}; rows kept for retry`);
   state.failing = true;
 }
 
@@ -225,11 +238,39 @@ async function readCommands($: EngineInterface, cache: Cache, dir: string, prefi
     if (entry.name.endsWith('.md') && entry.kind !== 'dir') {
       const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'skills', `${prefix}${entry.name.slice(0, -3)}`, true);
       if (definition !== null) read.push(definition);
-    } else if (depth < COMMAND_DEPTH && (entry.kind === 'dir' || entry.isLink === true)) {
-      read.push(...(await readCommands($, cache, `${dir}/${entry.name}`, `${prefix}${entry.name}:`, depth + 1)));
+    } else if (entry.kind === 'dir' || entry.isLink === true) {
+      if (depth < COMMAND_DEPTH) read.push(...(await readCommands($, cache, `${dir}/${entry.name}`, `${prefix}${entry.name}:`, depth + 1)));
+      else await reportSkippedCommands($, cache, `${dir}/${entry.name}`);
     }
   }
   return read;
+}
+
+// Whether a directory past the read depth holds a command file (the `.md` test readCommands applies), looking
+// at most PROBE_DEPTH levels down; `error` names why the answer is a guess: a directory that would not list, or
+// directories left unlooked at, both count as a loss.
+async function holdsCommand($: EngineInterface, dir: string, left: number): Promise<{ holds: boolean; error?: string }> {
+  if (!(await $.fs.exists(dir))) return { holds: false };
+  let entries: Entry[];
+  try {
+    entries = await $.fs.list(dir);
+  } catch (error) {
+    return { holds: true, error: `${dir}: ${message(error)}` };
+  }
+  if (entries.some((entry) => entry.name.endsWith('.md') && entry.kind !== 'dir')) return { holds: true };
+  const subs = entries.filter((entry) => entry.kind === 'dir' || entry.isLink === true);
+  if (subs.length > 0 && left === 0) return { holds: true, error: `${dir}: holds directories more than ${PROBE_DEPTH} levels down, not looked at` };
+  for (const sub of subs) {
+    const found = await holdsCommand($, `${dir}/${sub.name}`, left - 1);
+    if (found.holds) return found;
+  }
+  return { holds: false };
+}
+
+/** A command directory past the read depth is an error only when it holds a command file or could not be checked. */
+async function reportSkippedCommands($: EngineInterface, cache: Cache, path: string): Promise<void> {
+  const { holds, error } = await holdsCommand($, path, PROBE_DEPTH);
+  if (holds) plog($, cache, 'error', 'command-dir-skipped', `tool-visibility-controller: ${path} is deeper than ${COMMAND_DEPTH} command directories and is not read; a visibility rule in its commands is not enforced`, 'readCommands', { path, depth: COMMAND_DEPTH, ...(error === undefined ? {} : { error }) });
 }
 
 async function readScope($: EngineInterface, cache: Cache, path: string): Promise<ScopeFile | null> {
@@ -287,9 +328,13 @@ async function policyOf($: EngineInterface, cache: Cache): Promise<Policy> {
 // The loop's name: MAIN for the main chat, else its agent type, found in the
 // session's agent list or, for an id no row names, announced by SubagentStart
 // or SubagentStop; undefined when neither names the id.
-async function loopType($: EngineInterface, cache: Cache, agentId: string | undefined): Promise<string | undefined> {
+async function loopType($: EngineInterface, cache: Cache, agentId: string | undefined, action: string): Promise<string | undefined> {
   if (agentId === undefined) return MAIN;
-  return cache.types.of(agentId, () => $.agent.list());
+  const failures: unknown[] = [];
+  const type = await cache.types.of(agentId, () => $.agent.list(), (error) => failures.push(error));
+  // One row per loop: a list that keeps failing is not repeated at every listing and call.
+  if (failures.length > 0 && cache.types.firstMiss(`list-failed:${agentId}`)) plog($, cache, 'error', 'agent-list-failed', agentListFailedText(agentId, action, message(failures[0]), type), 'loopType', { error: message(failures[0]), agentId, ...(type ? { type } : {}) });
+  return type;
 }
 
 // A loop with no type is reported once, not at every listing and every call. One no agent list row or
@@ -312,7 +357,7 @@ async function rewritten($: EngineInterface, cache: Cache, type: string, text: s
   try {
     const policy = await policyOf($, cache);
     if (isEmpty(policy)) return text;
-    const loop = await loopType($, cache, agentId);
+    const loop = await loopType($, cache, agentId, `rewriting ${type}`);
     if (loop === undefined) {
       logUnresolved($, cache, agentId, `rewriting ${type}`);
       return text;
@@ -345,7 +390,7 @@ async function checkCall($: EngineInterface, cache: Cache, targets: ReadonlyArra
     const policy = await policyOf($, cache);
     const relevant = targets.filter(([set]) => hasRules(policy, set));
     if (relevant.length === 0) return undefined;
-    const loop = await loopType($, cache, agentId);
+    const loop = await loopType($, cache, agentId, `checking ${what}`);
     if (loop === undefined) {
       logUnresolved($, cache, agentId, `checking ${what}`);
       return undefined;
@@ -438,7 +483,10 @@ export const register: Register = (on: On) => {
   // A hook that throws or overruns its budget lets the call through.
   on('tool.call', async ($, e, next) => {
     if (e.tool === 'Agent') cache.spawns.note(e.tool_use_id);
-    const deny = await checkCall($, cache, callTargets(e.tool, (e as { skill?: unknown }).skill), e.agentId);
+    const skill = (e as { skill?: unknown }).skill;
+    const targets = callTargets(e.tool, skill);
+    if (e.tool === 'Skill' && targets.length === 1) plog($, cache, 'warning', 'skill-unnamed', skillUnnamedText(skill, e.agentId ?? MAIN), 'tool.call', { agentId: e.agentId });
+    const deny = await checkCall($, cache, targets, e.agentId);
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'tool.call');
     return deny === undefined ? next(e) : { deny };
   }).catch(($, e, next) => {

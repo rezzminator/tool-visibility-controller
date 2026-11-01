@@ -25,3 +25,14 @@ export function engineLoopText(agentId: string, action: string): string {
 export function hookFailureText(hook: string, failure: Pick<HookFailure, 'kind' | 'message'>, context: string): string {
   return `${hook} failed; proceeding unchecked (${context}; ${failure.kind}: ${failure.message ?? 'engine supplied no failure message'})`;
 }
+
+/** A Skill call whose skill argument names nothing: only the Skill tool itself is checked. */
+export function skillUnnamedText(skill: unknown, loop: string): string {
+  const what = skill === undefined || skill === null ? 'absent' : typeof skill === 'string' ? 'blank' : `a ${typeof skill}`;
+  return `tool-visibility-controller: a Skill call from loop ${loop} names no skill (its skill argument is ${what}); only the Skill tool itself is checked`;
+}
+
+/** The agent list could not be read: the loop takes the type SubagentStart announced, else it is unknown and goes unchecked. */
+export function agentListFailedText(agentId: string, action: string, reason: string, type: string | undefined): string {
+  return `tool-visibility-controller: listing agents failed: ${reason} while ${action}; loop ${agentId} ${type ? `takes its announced type ${type}` : 'is treated as unknown'}`;
+}
