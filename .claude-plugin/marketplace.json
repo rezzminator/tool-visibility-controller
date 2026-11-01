@@ -1,0 +1,25 @@
+{
+  "name": "professor",
+  "description": "Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop",
+  "owner": {
+    "name": "rezzminator",
+    "url": "https://github.com/rezzminator/tool-visibility-controller"
+  },
+  "plugins": [
+    {
+      "name": "tool-visibility-controller",
+      "source": "./plugins/tool-visibility-controller",
+      "description": "Claude Code plugin for per-agent tool visibility — hide and refuse subagents, skills, MCP and built-in tools per loop",
+      "homepage": "https://github.com/rezzminator/tool-visibility-controller",
+      "license": "MIT",
+      "keywords": [
+        "claude-code",
+        "subagents",
+        "mcp",
+        "claude-skills",
+        "tool-permissions",
+        "function-hooks"
+      ]
+    }
+  ]
+}

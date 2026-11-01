@@ -64,10 +64,10 @@ Function hooks are experimental; turn them on before Claude Code starts:
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 ```
 
-Install from Professor's marketplace:
+Install from its own marketplace:
 
 ```bash
-claude plugin marketplace add rezzminator/professor
+claude plugin marketplace add rezzminator/tool-visibility-controller
 claude plugin install tool-visibility-controller@professor
 ```
 
@@ -77,13 +77,13 @@ claude plugin install tool-visibility-controller@professor
 Where `claude plugin install --help` lists `--marketplace`, one command adds the marketplace and installs:
 
 ```bash
-claude plugin install tool-visibility-controller --marketplace rezzminator/professor
+claude plugin install tool-visibility-controller --marketplace rezzminator/tool-visibility-controller
 ```
 
 Inside a session:
 
 ```text
-/plugin marketplace add rezzminator/professor
+/plugin marketplace add rezzminator/tool-visibility-controller
 /plugin install tool-visibility-controller@professor
 ```
 
@@ -206,7 +206,7 @@ Errors, warnings, narrowly scoped info events and debug events append to `errors
 
 Rows stay within 4096 UTF-8 bytes; oversized detail is marked as truncated and the message is shortened. New directories and files use private modes (0700 and 0600); writes run off the policy path, with a five-second process timeout; session end drains pending writes. A level file over 20 MiB moves to `.1`, older generations shifting up to `.5`, and a `log-capped` warning follows; a lock in the log directory serializes the move. A failed write leaves policy behavior unchanged and shows one notice naming the directory and error per failing streak, re-armed after a successful write. The failed rows are kept and written with the next write, in this session or the next: at most 2000, past which the oldest go and the next successful write records how many in a `plugin-log-rows-dropped` error row. Rows whose environment or session lookup failed wait the same way, and only the last write at session end or start gives those up, said once. Identical screen lines collapse: the first shows, repeats are counted, and one `(and N more)` line follows after 30 seconds, on a timer and at session end. With neither `PLUGIN_LOG_DIR` nor `HOME`, a notice explicitly says logging is off. The screen shows only errors and the log's own failing or off notice: errors always appear on screen as well as in the plugin log; warning, info and debug rows go only to their files, or nowhere when the log cannot be written. An unavailable session id or engine clock is a warning (the row is still written, without the session or with local time); a file-cap notice is also log-only. Unreadable definitions or scope files, malformed or misplaced visibility blocks, a skipped user tier, a sub-agent with no resolvable type, failed checks or rewrites, and fail-open hook catches are errors because enforcement is incomplete; an engine-owned loop is a debug row. Denial reasons returned to the model are deliberate product output, not diagnostics, and are unchanged.
 
-The log writer is a vendored copy of the shared plugin-log library (`src/plugin-log.ts`), kept byte-identical to its canonical source; it is plain source with no runtime dependency.
+The log writer is the plugin's own logging module (`src/plugin-log.ts`); it is plain source with no runtime dependency.
 
 ## ⚠️ Limits
 
