@@ -2,24 +2,26 @@ import { describe as suite, expect, it } from 'vitest';
 import { AgentTypes } from '../plugins/tool-visibility-controller/src/agent-types.ts';
 
 suite('AgentTypes', () => {
+  const failed = (error: unknown) => { throw error; };
+
   it('answers an announced type for an id no list row names', async () => {
     const types = new AgentTypes();
     types.learn('wf1', 'general-purpose');
-    expect(await types.of('wf1', async () => [])).toBe('general-purpose');
+    expect(await types.of('wf1', async () => [], failed)).toBe('general-purpose');
   });
 
   it("takes the list's type over an announcement for an id the list names: a teammate's announcement carries its name", async () => {
     const types = new AgentTypes();
     types.learn('tm1', 'scout-2');
-    expect(await types.of('tm1', async () => [{ id: 'tm1', type: 'general-purpose' }])).toBe('general-purpose');
+    expect(await types.of('tm1', async () => [{ id: 'tm1', type: 'general-purpose' }], failed)).toBe('general-purpose');
   });
 
   it('asks the list for an id nothing announced and remembers the answer', async () => {
     const types = new AgentTypes();
     let asked = 0;
     const list = async () => (asked += 1, [{ id: 'a1', type: 'Explore' }]);
-    expect(await types.of('a1', list)).toBe('Explore');
-    expect(await types.of('a1', list)).toBe('Explore');
+    expect(await types.of('a1', list, failed)).toBe('Explore');
+    expect(await types.of('a1', list, failed)).toBe('Explore');
     expect(asked).toBe(1);
   });
 
@@ -27,8 +29,8 @@ suite('AgentTypes', () => {
     const types = new AgentTypes();
     let asked = 0;
     const list = async () => (asked += 1, []);
-    expect(await types.of('fork1', list)).toBeUndefined();
-    expect(await types.of('fork1', list)).toBeUndefined();
+    expect(await types.of('fork1', list, failed)).toBeUndefined();
+    expect(await types.of('fork1', list, failed)).toBeUndefined();
     expect(asked).toBe(2);
   });
 
@@ -36,17 +38,27 @@ suite('AgentTypes', () => {
     const types = new AgentTypes();
     types.learn('', 'Explore');
     types.learn('a1', '');
-    expect(await types.of('', async () => [])).toBeUndefined();
-    expect(await types.of('a1', async () => [])).toBeUndefined();
+    expect(await types.of('', async () => [], failed)).toBeUndefined();
+    expect(await types.of('a1', async () => [], failed)).toBeUndefined();
   });
 
   it('names an id a list row or an announcement named, typed or not, and no other: an engine loop', async () => {
     const types = new AgentTypes();
     types.learn('wf1', '');
-    expect(await types.of('wf1', async () => [])).toBeUndefined();
-    expect(await types.of('ls1', async () => [{ id: 'ls1', type: '' }])).toBeUndefined();
-    expect(await types.of('fork1', async () => [])).toBeUndefined();
+    expect(await types.of('wf1', async () => [], failed)).toBeUndefined();
+    expect(await types.of('ls1', async () => [{ id: 'ls1', type: '' }], failed)).toBeUndefined();
+    expect(await types.of('fork1', async () => [], failed)).toBeUndefined();
     expect([types.named('wf1'), types.named('ls1'), types.named('fork1'), types.named('')]).toEqual([true, true, false, false]);
+  });
+
+  it('hands a failed list to the caller and takes the announced type, else none', async () => {
+    const types = new AgentTypes();
+    types.learn('wf1', 'general-purpose');
+    const errors: unknown[] = [];
+    const broken = async () => { throw new Error('list down'); };
+    expect(await types.of('wf1', broken, (error) => errors.push(error))).toBe('general-purpose');
+    expect(await types.of('fork1', broken, (error) => errors.push(error))).toBeUndefined();
+    expect(errors.map((error) => (error as Error).message)).toEqual(['list down', 'list down']);
   });
 
   it('reports an unresolved loop once per id', () => {
