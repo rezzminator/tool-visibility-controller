@@ -2,6 +2,13 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.4.1] — 2026-11-01
+
+### Changed
+
+- **The plugin's own repository is a marketplace again, named `professor`.** `claude plugin marketplace add rezzminator/tool-visibility-controller` followed by `claude plugin install tool-visibility-controller@professor` installs it on its own; the README's install steps say so. An install made from the Professor marketplace keeps the same `tool-visibility-controller@professor` name and keeps updating.
+- The log writer is now the plugin's own logging module rather than a copy kept identical to a shared source. Logging behaviour is unchanged.
+
 ## [0.4.0] — 2026-10-30
 
 ### Fixed
