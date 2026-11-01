@@ -2,6 +2,15 @@
 
 Every release of tool-visibility-controller. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `tool-visibility-controller--v<version>`, with a GitHub release carrying the section below.
 
+## [0.4.2] — 2026-11-01
+
+### Fixed
+
+- **A loop keeps its announced type when the agent list fails.** A failed agent list used to throw out of the check, leaving the loop unchecked; the loop now takes the type its `SubagentStart` announcement named, else it is unresolved, and the failure is one `agent-list-failed` error per loop.
+- A command directory deeper than three levels was skipped in silence; one that holds a command file, or cannot be checked, is now a `command-dir-skipped` error, since its commands' `visibility` is not enforced. The README's limits say how deep commands are read.
+- A `Skill` call whose `skill` argument names no skill is a `skill-unnamed` warning; only the `Skill` tool itself is checked for it.
+- Rows the last write at session end or start cannot take are no longer dropped: they wait for the next session's first write, without a session id.
+
 ## [0.4.1] — 2026-11-01
 
 ### Changed
