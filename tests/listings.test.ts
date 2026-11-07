@@ -24,6 +24,12 @@ suite('filterEntries: the agent listing', () => {
     expect(filterEntries(AGENTS, hide('kit'), 'agents')).toBe(AGENTS);
   });
 
+  it('removes a namespaced plugin agent whose description holds a colon, naming it whole rather than as its plugin', () => {
+    const text = ['Available agent types for the Agent tool:', '- flights:hunter: Hunts the cause: reads logs, never edits. (Tools: Read, Grep)', '- flights:lander: Lands a flight. (Tools: *)', ''].join('\n');
+    expect(filterEntries(text, hide('flights:hunter'), 'agents')).toBe(['Available agent types for the Agent tool:', '- flights:lander: Lands a flight. (Tools: *)', ''].join('\n'));
+    expect(filterEntries(text, hide('flights'), 'agents')).toBe(text);
+  });
+
   it('returns the same text when nothing matches, and never matches a prefix', () => {
     expect(filterEntries(AGENTS, hide(), 'agents')).toBe(AGENTS);
     expect(filterEntries(AGENTS, hide('scope', 'sub'), 'agents')).toBe(AGENTS);
@@ -82,6 +88,11 @@ suite('filterEntries: the skill listing', () => {
 
   it('removes plugin skills, bare or described, and the last entry', () => {
     expect(filterEntries(SKILLS, hide('docs-kit:pdf', 'docs-kit:xlsx', 'cmd'), 'skills')).toBe(SKILLS.split('\n').slice(0, 6).join('\n'));
+  });
+
+  it('removes a namespaced plugin skill and a nested plugin command by their whole ids', () => {
+    const text = ['The following skills are available for use with the Skill tool:', '', '- flights:lander-inventory: Inventory: counts the landing.', '- flights:team:plan: Plan.', '- flights:doctor: Doctor.'].join('\n');
+    expect(filterEntries(text, hide('flights:lander-inventory', 'flights:team:plan'), 'skills')).toBe(['The following skills are available for use with the Skill tool:', '', '- flights:doctor: Doctor.'].join('\n'));
   });
 
   it('drops the attachment when every skill was hidden', () => {

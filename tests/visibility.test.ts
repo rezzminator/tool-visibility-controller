@@ -57,6 +57,21 @@ suite('readDefinition: the visibility field', () => {
       'visibility:\n  { visible-to: { include: [main] },\n    tools: { exclude: [Bash] } }',
       { visibleTo: { include: ['main'] }, sets: { tools: { exclude: ['Bash'] } } },
     ],
+    [
+      'plugin agent ids with a colon, block and flow',
+      'visibility:\n  visible-to:\n    include: [flights:lander]\n  agents: { exclude: [flights:hunter, "flights:sub-lander"] }',
+      { visibleTo: { include: ['flights:lander'] }, sets: { agents: { exclude: ['flights:hunter', 'flights:sub-lander'] } } },
+    ],
+    [
+      'a plugin agent id in a block list and a whole flow map',
+      'visibility: { visible-to: { include: [flights:lander, main] } }',
+      { visibleTo: { include: ['flights:lander', 'main'] }, sets: {} },
+    ],
+    [
+      'a plugin agent id as a block list item',
+      'visibility:\n  visible-to:\n    include:\n      - flights:lander',
+      { visibleTo: { include: ['flights:lander'] }, sets: {} },
+    ],
   ])('reads %s', (_label, front, expected) => {
     const read = readDefinition(def(`name: kid\n${front}\ntools: Read`), 'kid');
     expect(read.visibility).toEqual(expected);

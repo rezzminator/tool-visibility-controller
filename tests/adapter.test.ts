@@ -449,6 +449,161 @@ suite('built-in tools', () => {
   });
 });
 
+suite('plugin tier', () => {
+  const CFG = '/cfg';
+  const MARKET = '/market';
+  const ROOTED = `${MARKET}/plugins/flights`;
+  const only = (who: string) => `visibility:\n  visible-to:\n    include: [${who}]\n`;
+  const FILES: Record<string, string> = {
+    [`${CFG}/settings.json`]: JSON.stringify({ enabledPlugins: { 'flights@professor': true, 'extra@hub': true, 'idle@professor': false } }),
+    [`${CFG}/plugins/known_marketplaces.json`]: JSON.stringify({
+      professor: { source: { source: 'directory', path: MARKET }, installLocation: MARKET },
+      hub: { source: { source: 'github', repo: 'a/hub' }, installLocation: '/hub' },
+    }),
+    [`${CFG}/plugins/installed_plugins.json`]: JSON.stringify({ version: 2, plugins: { 'extra@hub': [{ scope: 'user', installPath: '/cache/hub/extra/1.0.0' }], 'flights@professor': [{ scope: 'user', installPath: '/cache/stale/flights' }] } }),
+    [`${MARKET}/.claude-plugin/marketplace.json`]: JSON.stringify({ plugins: [{ name: 'flights', source: './plugins/flights' }, { name: 'idle', source: './plugins/idle' }] }),
+    [`${ROOTED}/agents/hunter.md`]: md('hunter', only('flights:lander')),
+    [`${ROOTED}/agents/lander.md`]: md('lander', only('main')),
+    [`${ROOTED}/agents/walker-file.md`]: md('spec-walker', only('flights:lander')),
+    [`${ROOTED}/agents/nameless.md`]: `---\ndescription: no name\n${only('main')}---\nBody.\n`,
+    [`${ROOTED}/commands/doctor.md`]: `---\ndescription: doctor\n${only('main')}---\nBody.\n`,
+    [`${ROOTED}/commands/team/plan.md`]: `---\ndescription: plan\n${only('flights:lander')}---\nBody.\n`,
+    [`${ROOTED}/skills/lander-inventory/SKILL.md`]: md('inventory-by-name', only('flights:lander')),
+    '/cache/hub/extra/1.0.0/agents/ghost.md': md('ghost', only('boss')),
+    '/cache/stale/flights/agents/stale.md': md('stale', only('boss')),
+    [`${MARKET}/plugins/idle/agents/idle.md`]: md('idle', only('boss')),
+  };
+  const ENV = { HOME, CLAUDE_CONFIG_DIR: CFG };
+  const LISTED = ['Available agent types for the Agent tool:', '- general-purpose: General-purpose agent. (Tools: *)', '- flights:hunter: Hunts. (Tools: Read, Grep)', '- flights:lander: Lands. (Tools: *)', '', 'When you launch multiple agents for independent work, send them in a single message.'].join('\n');
+  const HUNTER = '- flights:hunter: Hunts. (Tools: Read, Grep)\n';
+  const LANDER = '- flights:lander: Lands. (Tools: *)\n';
+  const INVENTORY = ['The following skills are available for use with the Skill tool:', '', '- greet: Greets.', '- flights:doctor: Doctor.', '- flights:team:plan: Plan.', '- flights:lander-inventory: Inventory of the landing.'].join('\n');
+
+  it("refuses main the plugin agent only the lander may spawn, and lets the lander spawn it", async () => {
+    const run = engine(FILES, { env: ENV });
+    run.sub('l1', 'flights:lander');
+    run.sub('h1', 'flights:hunter');
+    expect((await run.spawn('flights:hunter')).deny).toBe(`Agent type flights:hunter is not available to the main chat: visibility.visible-to in ${ROOTED}/agents/hunter.md admits only flights:lander. Delegate the task to flights:lander, or choose another agent type.`);
+    expect(await run.spawn('flights:hunter', 'l1')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:lander')).toEqual({ model: 'm', agentId: 'new' });
+    expect((await run.spawn('flights:lander', 'h1')).deny).toBe(`Agent type flights:lander is not available to a flights:hunter agent: visibility.visible-to in ${ROOTED}/agents/lander.md admits only main. Delegate the task to the main chat, or choose another agent type.`);
+  });
+
+  it('names a plugin agent by its frontmatter name, else its file stem, never its file name alone', async () => {
+    const run = engine(FILES, { env: ENV });
+    expect((await run.spawn('flights:spec-walker')).deny).toContain(`in ${ROOTED}/agents/walker-file.md admits only flights:lander`);
+    run.sub('h1', 'flights:hunter');
+    expect((await run.spawn('flights:nameless', 'h1')).deny).toContain(`in ${ROOTED}/agents/nameless.md admits only main`);
+    expect(await run.spawn('flights:walker-file')).toEqual({ model: 'm', agentId: 'new' });
+  });
+
+  it('hides a plugin agent from the listing of every loop its visible-to does not admit', async () => {
+    const run = engine(FILES, { env: ENV });
+    run.sub('l1', 'flights:lander');
+    run.sub('h1', 'flights:hunter');
+    expect(await run.attach('agent_listing_delta', LISTED)).toEqual({ text: LISTED.replace(HUNTER, '') });
+    expect(await run.attach('agent_listing_delta', LISTED, 'l1')).toEqual({ text: LISTED.replace(LANDER, '') });
+    expect(await run.attach('agent_listing_delta', LISTED, 'h1')).toEqual({ text: LISTED.replace(HUNTER, '').replace(LANDER, '') });
+  });
+
+  it('names plugin skills by directory and commands by path, hides them from the listing and refuses the Skill tool', async () => {
+    const run = engine(FILES, { env: ENV });
+    run.sub('l1', 'flights:lander');
+    expect(await run.attach('skill_listing', INVENTORY)).toEqual({ text: INVENTORY.replace('- flights:team:plan: Plan.\n', '').replace('\n- flights:lander-inventory: Inventory of the landing.', '') });
+    expect(await run.attach('skill_listing', INVENTORY, 'l1')).toEqual({ text: INVENTORY.replace('- flights:doctor: Doctor.\n', '') });
+    expect((await run.tool('Skill', { skill: 'flights:lander-inventory' })).deny).toBe(`Skill flights:lander-inventory is not available to the main chat: visibility.visible-to in ${ROOTED}/skills/lander-inventory/SKILL.md admits only flights:lander. Delegate the task to flights:lander, or do the task without this skill.`);
+    expect((await run.tool('Skill', { skill: '/flights:team:plan' })).deny).toContain(`in ${ROOTED}/commands/team/plan.md admits only flights:lander`);
+    expect((await run.tool('Skill', { skill: 'flights:doctor' }, 'l1')).deny).toContain(`in ${ROOTED}/commands/doctor.md admits only main`);
+    expect(await run.tool('Skill', { skill: 'flights:lander-inventory' }, 'l1')).toEqual(RAN);
+    expect(await run.tool('Skill', { skill: 'flights:doctor' })).toEqual(RAN);
+  });
+
+  it('resolves a directory marketplace through its listing, any other kind through installed_plugins.json, and skips plugins that are off', async () => {
+    const run = engine(FILES, { env: ENV });
+    expect((await run.spawn('extra:ghost')).deny).toContain('in /cache/hub/extra/1.0.0/agents/ghost.md admits only boss');
+    expect((await run.spawn('flights:hunter')).deny).toContain(`in ${ROOTED}/agents/hunter.md`);
+    expect(await run.spawn('flights:stale')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('idle:idle')).toEqual({ model: 'm', agentId: 'new' });
+  });
+
+  it('finds the plugin records under ~/.claude when CLAUDE_CONFIG_DIR is unset', async () => {
+    const moved = Object.fromEntries(Object.entries(FILES).map(([path, text]) => [path.replace(CFG, `${HOME}/.claude`), text]));
+    const run = engine(moved);
+    expect((await run.spawn('flights:hunter')).deny).toContain(`in ${ROOTED}/agents/hunter.md admits only flights:lander`);
+  });
+
+  it('logs a directory marketplace listing that cannot be read as an error with its path and gives its plugin no root, never the cached copy', async () => {
+    const dir = await logTemp();
+    const listing = `${MARKET}/.claude-plugin/marketplace.json`;
+    const run = engine(FILES, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failRead: listing });
+    expect((await run.spawn('extra:ghost')).deny).toContain('in /cache/hub/extra/1.0.0/agents/ghost.md admits only boss');
+    expect(await run.spawn('flights:stale')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    await run.endSession();
+    const logs = join(dir, 'tool-visibility-controller');
+    expect((await logRows(logs, 'errors')).map((row) => [row.event, row.msg, row.detail])).toEqual([
+      ['plugin-record-unreadable', `tool-visibility-controller: reading ${listing} failed: EACCES: permission denied, open '${listing}'; plugin definitions that depend on it are not read`, { error: `EACCES: permission denied, open '${listing}'`, path: listing }],
+    ]);
+    expect(await logRows(logs, 'warnings')).toEqual([]);
+  });
+
+  it('gives no plugin a root when known_marketplaces.json cannot be read, not even one from another marketplace kind', async () => {
+    const dir = await logTemp();
+    const known = `${CFG}/plugins/known_marketplaces.json`;
+    const run = engine(FILES, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failRead: known });
+    expect(await run.spawn('extra:ghost')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:stale')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    await run.endSession();
+    const logs = join(dir, 'tool-visibility-controller');
+    expect((await logRows(logs, 'errors')).map((row) => [row.event, row.detail])).toEqual([
+      ['plugin-record-unreadable', { error: `EACCES: permission denied, open '${known}'`, path: known }],
+    ]);
+    expect(await logRows(logs, 'warnings')).toEqual([]);
+  });
+
+  it('logs a plugin record of the wrong shape as an error once and gives every plugin that depends on it no root, without a warning', async () => {
+    const dir = await logTemp();
+    const installed = `${CFG}/plugins/installed_plugins.json`;
+    const run = engine({ ...FILES, [installed]: '{"plugins": []}' }, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    expect((await run.spawn('flights:hunter')).deny).toContain(`in ${ROOTED}/agents/hunter.md admits only flights:lander`);
+    expect(await run.spawn('extra:ghost')).toEqual({ model: 'm', agentId: 'new' });
+    await run.endSession();
+    const logs = join(dir, 'tool-visibility-controller');
+    expect((await logRows(logs, 'errors')).map((row) => [row.event, row.msg, row.detail])).toEqual([
+      ['plugin-record-unreadable', `tool-visibility-controller: ${installed} is not a plugin record: plugins is not an object; plugin definitions that depend on it are not read`, { error: 'plugins is not an object', path: installed }],
+    ]);
+    expect(await logRows(logs, 'warnings')).toEqual([]);
+  });
+
+  it('falls back to installed_plugins.json when the directory listing lacks the plugin, and warns of an enabled plugin no record roots, apart from a plugin that is off', async () => {
+    const dir = await logTemp();
+    const settings = JSON.stringify({ enabledPlugins: { 'flights@professor': true, 'lost@nowhere': true, 'idle@professor': false } });
+    const run = engine({ ...FILES, [`${CFG}/settings.json`]: settings, [`${MARKET}/.claude-plugin/marketplace.json`]: '{"plugins": []}' }, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    expect((await run.spawn('flights:stale')).deny).toContain('in /cache/stale/flights/agents/stale.md admits only boss');
+    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    await run.endSession();
+    const logs = join(dir, 'tool-visibility-controller');
+    expect(await logRows(logs, 'errors')).toEqual([]);
+    expect((await logRows(logs, 'warnings')).map((row) => [row.event, row.msg, row.detail])).toEqual([
+      ['plugin-root-unresolved', `tool-visibility-controller: plugin lost@nowhere is enabled but no record under ${CFG}/plugins gives its root; its agents, commands and skills are not read`, { plugin: 'lost@nowhere', config: CFG }],
+    ]);
+  });
+
+  it('reads no plugin record and logs nothing when settings.json is absent', async () => {
+    const dir = await logTemp();
+    const { [`${CFG}/settings.json`]: _settings, ...without } = FILES;
+    const present = engine(FILES, { env: ENV });
+    expect((await present.spawn('flights:hunter')).deny).toContain('admits only flights:lander');
+    const run = engine(without, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
+    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    await run.endSession();
+    expect(run.reads()).toEqual([]);
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'errors')).toEqual([]);
+    expect(await logRows(join(dir, 'tool-visibility-controller'), 'warnings')).toEqual([]);
+  });
+});
+
 suite('discovery and failure', () => {
   it('changes nothing and logs nothing when no rule exists', async () => {
     const run = engine({ [`${ROOT}/.claude/agents/scope-child.md`]: md('scope-child') });
@@ -724,6 +879,10 @@ suite('plugin log adapter', () => {
     { event: 'frontmatter-problem', files: { [`${ROOT}/.claude/skills/greet/SKILL.md`]: md('greet', 'visibility:\n  tools:\n    exclude: [Bash]\n') }, options: {}, where: 'readOwned', level: 'errors' },
     { event: 'scope-unreadable', files: { [SCOPE]: '{}' }, options: { failRead: SCOPE }, where: 'readScope', level: 'errors' },
     { event: 'scope-problem', files: { [SCOPE]: '{' }, options: {}, where: 'readScope', level: 'errors' },
+    { event: 'plugin-record-unreadable', files: { '/cfg/settings.json': '{}' }, options: { env: { HOME, CLAUDE_CONFIG_DIR: '/cfg' }, failRead: '/cfg/settings.json' }, where: 'pluginRecord', level: 'errors' },
+    { event: 'plugin-record-unreadable', files: { '/cfg/settings.json': '{ "enabledPlugins": ' }, options: { env: { HOME, CLAUDE_CONFIG_DIR: '/cfg' } }, where: 'pluginRecord', level: 'errors' },
+    { event: 'plugin-record-unreadable', files: { '/cfg/settings.json': '[]' }, options: { env: { HOME, CLAUDE_CONFIG_DIR: '/cfg' } }, where: 'pluginRoots', level: 'errors' },
+    { event: 'plugin-root-unresolved', files: { '/cfg/settings.json': '{"enabledPlugins": {"ghost@professor": true}}' }, options: { env: { HOME, CLAUDE_CONFIG_DIR: '/cfg' } }, where: 'pluginRoots', level: 'warnings' },
     { event: 'user-tier-skipped', files: {}, options: { env: {} }, where: 'loadPolicy', level: 'errors' },
     { event: 'rewrite-failed', files: SCOPED, options: { failRoot: true }, where: 'rewritten', level: 'errors' },
   ])('records $event at $where without changing the listing', async ({ event, files, options, where, level }) => {

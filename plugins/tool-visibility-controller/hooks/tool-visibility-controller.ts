@@ -22,6 +22,7 @@ import {
   type Policy,
   type ScopeFile,
 } from '../src/policy.ts';
+import { directoryLocation, enabledPlugins, installedRoot, listedRoot, type PluginRef } from '../src/plugin-roots.ts';
 import { readDefinition, SETS, type SetName } from '../src/visibility.ts';
 
 // Thin adapter: every decision lives in src/. A failure is logged with its
@@ -178,7 +179,8 @@ async function entriesOf($: EngineInterface, cache: Cache, dir: string): Promise
 
 // A missing definition is skipped; it must not mask a farther valid one.
 // Other unreadable files still stand for their name with no rule, as before.
-async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'agents' | 'skills', fallback: string, byPath: boolean): Promise<Read | null> {
+// `namespace` (`plugin:`) prefixes the name of a plugin's definition, as Claude Code names it.
+async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'agents' | 'skills', fallback: string, byPath: boolean, namespace = ''): Promise<Read | null> {
   let text: string;
   try {
     text = await $.fs.read(path);
@@ -191,10 +193,10 @@ async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'a
       return null;
     }
     plog($, cache, 'error', 'agent-def-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; ${fallback} has no visibility rule`, 'readOwned', { error: message(error), path });
-    return { name: fallback, owned: null };
+    return { name: `${namespace}${fallback}`, owned: null };
   }
   const definition = readDefinition(text, fallback);
-  const name = byPath ? fallback : definition.name;
+  const name = `${namespace}${byPath ? fallback : definition.name}`;
   for (const problem of definition.problems) plog($, cache, 'error', 'frontmatter-problem', `tool-visibility-controller: ${path}: ${problem}; that block is ignored`, 'readOwned', { error: problem, path });
   const visibility = definition.visibility;
   if (visibility === null) return { name, owned: null };
@@ -208,23 +210,24 @@ async function readOwned($: EngineInterface, cache: Cache, path: string, set: 'a
   return { name, owned: { set, name, path, visibility } };
 }
 
-async function readAgents($: EngineInterface, cache: Cache, dir: string): Promise<Read[]> {
+async function readAgents($: EngineInterface, cache: Cache, dir: string, namespace = ''): Promise<Read[]> {
   const read: Read[] = [];
   for (const entry of await entriesOf($, cache, dir)) {
     if (!entry.name.endsWith('.md') || entry.kind === 'dir') continue;
-    const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'agents', entry.name.slice(0, -3), false);
+    const definition = await readOwned($, cache, `${dir}/${entry.name}`, 'agents', entry.name.slice(0, -3), false, namespace);
     if (definition !== null) read.push(definition);
   }
   return read;
 }
 
-async function readSkills($: EngineInterface, cache: Cache, dir: string): Promise<Read[]> {
+// A plugin's skill is named by its directory (`plugin:dir`); a user or project skill by its frontmatter name.
+async function readSkills($: EngineInterface, cache: Cache, dir: string, namespace = ''): Promise<Read[]> {
   const read: Read[] = [];
   for (const entry of await entriesOf($, cache, dir)) {
     if (entry.kind === 'file') continue;
     const path = `${dir}/${entry.name}/SKILL.md`;
     if (await $.fs.exists(path)) {
-      const definition = await readOwned($, cache, path, 'skills', entry.name, false);
+      const definition = await readOwned($, cache, path, 'skills', entry.name, namespace !== '', namespace);
       if (definition !== null) read.push(definition);
     }
   }
@@ -287,7 +290,69 @@ async function readScope($: EngineInterface, cache: Cache, path: string): Promis
   return scope;
 }
 
-// The user tier ($CLAUDE_CONFIG_DIR, else ~/.claude), then each project tier
+// A plugin record that exists but could not be read, parsed or understood: "could not look", never "found nothing".
+const UNREADABLE = Symbol('unreadable');
+
+// The one door to the records Claude Code keeps about plugins. Absent file: undefined, silently ("not
+// enabled" and "not installed" are answers). A file that exists but cannot be read or parsed is an error
+// row with its path and reason, and UNREADABLE, distinct from every absence.
+async function pluginRecord($: EngineInterface, cache: Cache, records: Map<string, unknown>, path: string): Promise<unknown> {
+  if (records.has(path)) return records.get(path);
+  let record: unknown;
+  if (await $.fs.exists(path)) {
+    try {
+      record = JSON.parse(await $.fs.read(path));
+    } catch (error) {
+      record = UNREADABLE;
+      plog($, cache, 'error', 'plugin-record-unreadable', `tool-visibility-controller: reading ${path} failed: ${message(error)}; plugin definitions that depend on it are not read`, 'pluginRecord', { error: message(error), path });
+    }
+  }
+  records.set(path, record);
+  return record;
+}
+
+// Every enabled plugin's root (plugin-agents spec C2): the user config dir's settings.json names the
+// enabled `plugin@marketplace` ids; a directory marketplace's root is its install location joined with the
+// source its marketplace.json lists, any other root comes from installed_plugins.json, as does a directory
+// marketplace's plugin when a record says nothing of it. A record that could not be read gives that key no
+// root (its error row says why): for a directory marketplace the installed cache copy is not what Claude Code
+// runs. A plugin whose root no record gives is a warning row, never a silent miss.
+async function pluginRoots($: EngineInterface, cache: Cache, config: string): Promise<Array<{ plugin: string; root: string }>> {
+  const records = new Map<string, unknown>();
+  const shapeless = new Set<string>();
+  const shaped = async <T>(path: string, read: (record: unknown) => T): Promise<T | undefined | typeof UNREADABLE> => {
+    const record = await pluginRecord($, cache, records, path);
+    if (record === undefined) return undefined;
+    if (record === UNREADABLE || shapeless.has(path)) return UNREADABLE;
+    try {
+      return read(record);
+    } catch (error) {
+      shapeless.add(path);
+      plog($, cache, 'error', 'plugin-record-unreadable', `tool-visibility-controller: ${path} is not a plugin record: ${message(error)}; plugin definitions that depend on it are not read`, 'pluginRoots', { error: message(error), path });
+      return UNREADABLE;
+    }
+  };
+  const rootOf = async (ref: PluginRef): Promise<string | undefined | typeof UNREADABLE> => {
+    const location = await shaped(`${config}/plugins/known_marketplaces.json`, (known) => directoryLocation(known, ref.marketplace));
+    if (location === UNREADABLE) return UNREADABLE;
+    if (location !== undefined) {
+      const root = await shaped(`${location.replace(/\/+$/, '')}/.claude-plugin/marketplace.json`, (listing) => listedRoot(location, listing, ref.plugin));
+      if (root !== undefined) return root;
+    }
+    return shaped(`${config}/plugins/installed_plugins.json`, (installed) => installedRoot(installed, ref));
+  };
+  const roots: Array<{ plugin: string; root: string }> = [];
+  const enabled = await shaped(`${config}/settings.json`, enabledPlugins);
+  for (const ref of enabled === undefined || enabled === UNREADABLE ? [] : enabled) {
+    const root = await rootOf(ref);
+    if (root === UNREADABLE) continue;
+    if (root === undefined) plog($, cache, 'warning', 'plugin-root-unresolved', `tool-visibility-controller: plugin ${ref.id} is enabled but no record under ${config}/plugins gives its root; its agents, commands and skills are not read`, 'pluginRoots', { plugin: ref.id, config });
+    else roots.push({ plugin: ref.plugin, root });
+  }
+  return roots;
+}
+
+// The plugin tier (each enabled plugin's agents, commands and skills as `plugin:name`), the user tier ($CLAUDE_CONFIG_DIR, else ~/.claude), then each project tier
 // from below the home directory (else the filesystem root) down to the session
 // root: the nearest definition of a name wins, and a nearer scope file's key
 // replaces a farther one's.
@@ -295,13 +360,20 @@ async function loadPolicy($: EngineInterface, cache: Cache): Promise<Policy> {
   const config = await $.env.get('CLAUDE_CONFIG_DIR');
   const home = await $.env.get('HOME');
   const tiers: string[] = [];
-  if (config !== undefined && config !== '') tiers.push(config);
-  else if (home !== undefined && home !== '') tiers.push(`${home}/.claude`);
+  const user = config !== undefined && config !== '' ? config : home !== undefined && home !== '' ? `${home}/.claude` : undefined;
+  if (user !== undefined) tiers.push(user);
   else plog($, cache, 'error', 'user-tier-skipped', 'tool-visibility-controller: neither CLAUDE_CONFIG_DIR nor HOME is set; user definitions and scope file are not read', 'loadPolicy');
   for (const dir of ancestorDirs(await $.session.root(), home)) tiers.push(claudeDir(dir));
   const agents = new Map<string, Owned | null>();
   const skills = new Map<string, Owned | null>();
   const scopes: Array<{ path: string; scope: ScopeFile }> = [];
+  if (user !== undefined) {
+    for (const { plugin, root } of await pluginRoots($, cache, user)) {
+      for (const { name, owned } of await readAgents($, cache, `${root}/agents`, `${plugin}:`)) agents.set(name, owned);
+      for (const { name, owned } of await readCommands($, cache, `${root}/commands`, `${plugin}:`, 0)) skills.set(name, owned);
+      for (const { name, owned } of await readSkills($, cache, `${root}/skills`, `${plugin}:`)) skills.set(name, owned);
+    }
+  }
   for (const tier of tiers) {
     for (const { name, owned } of await readAgents($, cache, `${tier}/agents`)) agents.set(name, owned);
     for (const { name, owned } of await readCommands($, cache, `${tier}/commands`, '', 0)) skills.set(name, owned);

@@ -8,8 +8,8 @@ its listings and may invoke. `README.md` is the behavioural spec.
 ## Layout
 
 - `plugins/tool-visibility-controller/`: everything that installs, and nothing else — the directory scans only this folder, so dev files never go in it.
-- `plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts`: the adapter, the only file that touches `$`: it reads the definitions and scope files, resolves a loop's agent type, and wires `prompt.attachment`, `agent.spawn` and `tool.call` to `src/`.
-- `plugins/tool-visibility-controller/src/`: every decision, pure and unit-tested — `visibility.ts` reads the frontmatter field, `policy.ts` matches names and decides who may use what, `listings.ts` rewrites the listings; `tests/` holds one vitest file per concern.
+- `plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts`: the adapter, the only file that touches `$`: it reads the definitions, the scope files and the Claude plugin records, resolves a loop's agent type, and wires `prompt.attachment`, `agent.spawn` and `tool.call` to `src/`.
+- `plugins/tool-visibility-controller/src/`: every decision, pure and unit-tested — `visibility.ts` reads the frontmatter field, `policy.ts` matches names and decides who may use what, `listings.ts` rewrites the listings, `plugin-roots.ts` turns the Claude plugin records into each enabled plugin's root; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
 - `plugins/tool-visibility-controller/.claude-plugin/`: `plugin.json` (the manifest) and `icon.svg`; the plugin installs as `tool-visibility-controller@professor`.
 
