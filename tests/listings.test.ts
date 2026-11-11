@@ -25,8 +25,8 @@ suite('filterEntries: the agent listing', () => {
   });
 
   it('removes a namespaced plugin agent whose description holds a colon, naming it whole rather than as its plugin', () => {
-    const text = ['Available agent types for the Agent tool:', '- flights:hunter: Hunts the cause: reads logs, never edits. (Tools: Read, Grep)', '- flights:lander: Lands a flight. (Tools: *)', ''].join('\n');
-    expect(filterEntries(text, hide('flights:hunter'), 'agents')).toBe(['Available agent types for the Agent tool:', '- flights:lander: Lands a flight. (Tools: *)', ''].join('\n'));
+    const text = ['Available agent types for the Agent tool:', '- flights:diff-checker: Hunts the cause: reads logs, never edits. (Tools: Read, Grep)', '- flights:lander: Lands a flight. (Tools: *)', ''].join('\n');
+    expect(filterEntries(text, hide('flights:diff-checker'), 'agents')).toBe(['Available agent types for the Agent tool:', '- flights:lander: Lands a flight. (Tools: *)', ''].join('\n'));
     expect(filterEntries(text, hide('flights'), 'agents')).toBe(text);
   });
 

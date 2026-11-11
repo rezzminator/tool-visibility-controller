@@ -462,9 +462,9 @@ suite('plugin tier', () => {
     }),
     [`${CFG}/plugins/installed_plugins.json`]: JSON.stringify({ version: 2, plugins: { 'extra@hub': [{ scope: 'user', installPath: '/cache/hub/extra/1.0.0' }], 'flights@professor': [{ scope: 'user', installPath: '/cache/stale/flights' }] } }),
     [`${MARKET}/.claude-plugin/marketplace.json`]: JSON.stringify({ plugins: [{ name: 'flights', source: './plugins/flights' }, { name: 'idle', source: './plugins/idle' }] }),
-    [`${ROOTED}/agents/hunter.md`]: md('hunter', only('flights:lander')),
+    [`${ROOTED}/agents/diff-checker.md`]: md('diff-checker', only('flights:lander')),
     [`${ROOTED}/agents/lander.md`]: md('lander', only('main')),
-    [`${ROOTED}/agents/walker-file.md`]: md('spec-walker', only('flights:lander')),
+    [`${ROOTED}/agents/spec-checker-file.md`]: md('spec-checker', only('flights:lander')),
     [`${ROOTED}/agents/nameless.md`]: `---\ndescription: no name\n${only('main')}---\nBody.\n`,
     [`${ROOTED}/commands/doctor.md`]: `---\ndescription: doctor\n${only('main')}---\nBody.\n`,
     [`${ROOTED}/commands/team/plan.md`]: `---\ndescription: plan\n${only('flights:lander')}---\nBody.\n`,
@@ -474,36 +474,36 @@ suite('plugin tier', () => {
     [`${MARKET}/plugins/idle/agents/idle.md`]: md('idle', only('boss')),
   };
   const ENV = { HOME, CLAUDE_CONFIG_DIR: CFG };
-  const LISTED = ['Available agent types for the Agent tool:', '- general-purpose: General-purpose agent. (Tools: *)', '- flights:hunter: Hunts. (Tools: Read, Grep)', '- flights:lander: Lands. (Tools: *)', '', 'When you launch multiple agents for independent work, send them in a single message.'].join('\n');
-  const HUNTER = '- flights:hunter: Hunts. (Tools: Read, Grep)\n';
+  const LISTED = ['Available agent types for the Agent tool:', '- general-purpose: General-purpose agent. (Tools: *)', '- flights:diff-checker: Hunts. (Tools: Read, Grep)', '- flights:lander: Lands. (Tools: *)', '', 'When you launch multiple agents for independent work, send them in a single message.'].join('\n');
+  const DIFF_CHECKER = '- flights:diff-checker: Hunts. (Tools: Read, Grep)\n';
   const LANDER = '- flights:lander: Lands. (Tools: *)\n';
   const INVENTORY = ['The following skills are available for use with the Skill tool:', '', '- greet: Greets.', '- flights:doctor: Doctor.', '- flights:team:plan: Plan.', '- flights:lander-inventory: Inventory of the landing.'].join('\n');
 
   it("refuses main the plugin agent only the lander may spawn, and lets the lander spawn it", async () => {
     const run = engine(FILES, { env: ENV });
     run.sub('l1', 'flights:lander');
-    run.sub('h1', 'flights:hunter');
-    expect((await run.spawn('flights:hunter')).deny).toBe(`Agent type flights:hunter is not available to the main chat: visibility.visible-to in ${ROOTED}/agents/hunter.md admits only flights:lander. Delegate the task to flights:lander, or choose another agent type.`);
-    expect(await run.spawn('flights:hunter', 'l1')).toEqual({ model: 'm', agentId: 'new' });
+    run.sub('h1', 'flights:diff-checker');
+    expect((await run.spawn('flights:diff-checker')).deny).toBe(`Agent type flights:diff-checker is not available to the main chat: visibility.visible-to in ${ROOTED}/agents/diff-checker.md admits only flights:lander. Delegate the task to flights:lander, or choose another agent type.`);
+    expect(await run.spawn('flights:diff-checker', 'l1')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.spawn('flights:lander')).toEqual({ model: 'm', agentId: 'new' });
-    expect((await run.spawn('flights:lander', 'h1')).deny).toBe(`Agent type flights:lander is not available to a flights:hunter agent: visibility.visible-to in ${ROOTED}/agents/lander.md admits only main. Delegate the task to the main chat, or choose another agent type.`);
+    expect((await run.spawn('flights:lander', 'h1')).deny).toBe(`Agent type flights:lander is not available to a flights:diff-checker agent: visibility.visible-to in ${ROOTED}/agents/lander.md admits only main. Delegate the task to the main chat, or choose another agent type.`);
   });
 
   it('names a plugin agent by its frontmatter name, else its file stem, never its file name alone', async () => {
     const run = engine(FILES, { env: ENV });
-    expect((await run.spawn('flights:spec-walker')).deny).toContain(`in ${ROOTED}/agents/walker-file.md admits only flights:lander`);
-    run.sub('h1', 'flights:hunter');
+    expect((await run.spawn('flights:spec-checker')).deny).toContain(`in ${ROOTED}/agents/spec-checker-file.md admits only flights:lander`);
+    run.sub('h1', 'flights:diff-checker');
     expect((await run.spawn('flights:nameless', 'h1')).deny).toContain(`in ${ROOTED}/agents/nameless.md admits only main`);
-    expect(await run.spawn('flights:walker-file')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:spec-checker-file')).toEqual({ model: 'm', agentId: 'new' });
   });
 
   it('hides a plugin agent from the listing of every loop its visible-to does not admit', async () => {
     const run = engine(FILES, { env: ENV });
     run.sub('l1', 'flights:lander');
-    run.sub('h1', 'flights:hunter');
-    expect(await run.attach('agent_listing_delta', LISTED)).toEqual({ text: LISTED.replace(HUNTER, '') });
+    run.sub('h1', 'flights:diff-checker');
+    expect(await run.attach('agent_listing_delta', LISTED)).toEqual({ text: LISTED.replace(DIFF_CHECKER, '') });
     expect(await run.attach('agent_listing_delta', LISTED, 'l1')).toEqual({ text: LISTED.replace(LANDER, '') });
-    expect(await run.attach('agent_listing_delta', LISTED, 'h1')).toEqual({ text: LISTED.replace(HUNTER, '').replace(LANDER, '') });
+    expect(await run.attach('agent_listing_delta', LISTED, 'h1')).toEqual({ text: LISTED.replace(DIFF_CHECKER, '').replace(LANDER, '') });
   });
 
   it('names plugin skills by directory and commands by path, hides them from the listing and refuses the Skill tool', async () => {
@@ -521,7 +521,7 @@ suite('plugin tier', () => {
   it('resolves a directory marketplace through its listing, any other kind through installed_plugins.json, and skips plugins that are off', async () => {
     const run = engine(FILES, { env: ENV });
     expect((await run.spawn('extra:ghost')).deny).toContain('in /cache/hub/extra/1.0.0/agents/ghost.md admits only boss');
-    expect((await run.spawn('flights:hunter')).deny).toContain(`in ${ROOTED}/agents/hunter.md`);
+    expect((await run.spawn('flights:diff-checker')).deny).toContain(`in ${ROOTED}/agents/diff-checker.md`);
     expect(await run.spawn('flights:stale')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.spawn('idle:idle')).toEqual({ model: 'm', agentId: 'new' });
   });
@@ -529,7 +529,7 @@ suite('plugin tier', () => {
   it('finds the plugin records under ~/.claude when CLAUDE_CONFIG_DIR is unset', async () => {
     const moved = Object.fromEntries(Object.entries(FILES).map(([path, text]) => [path.replace(CFG, `${HOME}/.claude`), text]));
     const run = engine(moved);
-    expect((await run.spawn('flights:hunter')).deny).toContain(`in ${ROOTED}/agents/hunter.md admits only flights:lander`);
+    expect((await run.spawn('flights:diff-checker')).deny).toContain(`in ${ROOTED}/agents/diff-checker.md admits only flights:lander`);
   });
 
   it('logs a directory marketplace listing that cannot be read as an error with its path and gives its plugin no root, never the cached copy', async () => {
@@ -538,7 +538,7 @@ suite('plugin tier', () => {
     const run = engine(FILES, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failRead: listing });
     expect((await run.spawn('extra:ghost')).deny).toContain('in /cache/hub/extra/1.0.0/agents/ghost.md admits only boss');
     expect(await run.spawn('flights:stale')).toEqual({ model: 'm', agentId: 'new' });
-    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:diff-checker')).toEqual({ model: 'm', agentId: 'new' });
     await run.endSession();
     const logs = join(dir, 'tool-visibility-controller');
     expect((await logRows(logs, 'errors')).map((row) => [row.event, row.msg, row.detail])).toEqual([
@@ -553,7 +553,7 @@ suite('plugin tier', () => {
     const run = engine(FILES, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess, failRead: known });
     expect(await run.spawn('extra:ghost')).toEqual({ model: 'm', agentId: 'new' });
     expect(await run.spawn('flights:stale')).toEqual({ model: 'm', agentId: 'new' });
-    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:diff-checker')).toEqual({ model: 'm', agentId: 'new' });
     await run.endSession();
     const logs = join(dir, 'tool-visibility-controller');
     expect((await logRows(logs, 'errors')).map((row) => [row.event, row.detail])).toEqual([
@@ -566,7 +566,7 @@ suite('plugin tier', () => {
     const dir = await logTemp();
     const installed = `${CFG}/plugins/installed_plugins.json`;
     const run = engine({ ...FILES, [installed]: '{"plugins": []}' }, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
-    expect((await run.spawn('flights:hunter')).deny).toContain(`in ${ROOTED}/agents/hunter.md admits only flights:lander`);
+    expect((await run.spawn('flights:diff-checker')).deny).toContain(`in ${ROOTED}/agents/diff-checker.md admits only flights:lander`);
     expect(await run.spawn('extra:ghost')).toEqual({ model: 'm', agentId: 'new' });
     await run.endSession();
     const logs = join(dir, 'tool-visibility-controller');
@@ -581,7 +581,7 @@ suite('plugin tier', () => {
     const settings = JSON.stringify({ enabledPlugins: { 'flights@professor': true, 'lost@nowhere': true, 'idle@professor': false } });
     const run = engine({ ...FILES, [`${CFG}/settings.json`]: settings, [`${MARKET}/.claude-plugin/marketplace.json`]: '{"plugins": []}' }, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
     expect((await run.spawn('flights:stale')).deny).toContain('in /cache/stale/flights/agents/stale.md admits only boss');
-    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:diff-checker')).toEqual({ model: 'm', agentId: 'new' });
     await run.endSession();
     const logs = join(dir, 'tool-visibility-controller');
     expect(await logRows(logs, 'errors')).toEqual([]);
@@ -594,9 +594,9 @@ suite('plugin tier', () => {
     const dir = await logTemp();
     const { [`${CFG}/settings.json`]: _settings, ...without } = FILES;
     const present = engine(FILES, { env: ENV });
-    expect((await present.spawn('flights:hunter')).deny).toContain('admits only flights:lander');
+    expect((await present.spawn('flights:diff-checker')).deny).toContain('admits only flights:lander');
     const run = engine(without, { env: { ...ENV, PLUGIN_LOG_DIR: dir }, runProcess: realProcess });
-    expect(await run.spawn('flights:hunter')).toEqual({ model: 'm', agentId: 'new' });
+    expect(await run.spawn('flights:diff-checker')).toEqual({ model: 'm', agentId: 'new' });
     await run.endSession();
     expect(run.reads()).toEqual([]);
     expect(await logRows(join(dir, 'tool-visibility-controller'), 'errors')).toEqual([]);

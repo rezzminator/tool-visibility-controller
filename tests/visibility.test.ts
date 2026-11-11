@@ -59,8 +59,8 @@ suite('readDefinition: the visibility field', () => {
     ],
     [
       'plugin agent ids with a colon, block and flow',
-      'visibility:\n  visible-to:\n    include: [flights:lander]\n  agents: { exclude: [flights:hunter, "flights:sub-lander"] }',
-      { visibleTo: { include: ['flights:lander'] }, sets: { agents: { exclude: ['flights:hunter', 'flights:sub-lander'] } } },
+      'visibility:\n  visible-to:\n    include: [flights:lander]\n  agents: { exclude: [flights:diff-checker, "flights:usage-checker"] }',
+      { visibleTo: { include: ['flights:lander'] }, sets: { agents: { exclude: ['flights:diff-checker', 'flights:usage-checker'] } } },
     ],
     [
       'a plugin agent id in a block list and a whole flow map',
