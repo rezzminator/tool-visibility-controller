@@ -1,4 +1,4 @@
-import { afterEach, describe as suite, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe as suite, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ const DEFERRED = ['The following deferred tools are now available via ToolSearch
 const TOOLS = ['Bash', 'Read', 'WebFetch', 'mcp__harvester__search_web', 'mcp__harvester__read', 'mcp__chat__ls', 'mcp__chat__call', 'mcp__docs__read', 'mcp__my__srv__read'];
 const RAN = { result: 'ran', text: 'ran' };
 
-type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; failListAt?: string; failAgentList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
+type Options = { env?: Record<string, string>; failRead?: string; missingRead?: string; failList?: boolean; failListAt?: string; failAgentList?: boolean; root?: string; failRoot?: boolean; failSessionId?: boolean; failClock?: boolean; failEnv?: boolean; failRegister?: boolean; failCommand?: boolean; runProcess?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }> };
 
 function engine(files: Record<string, string>, options: Options = {}) {
   const hooks = new Map<string, Hook>();
@@ -46,13 +46,23 @@ function engine(files: Record<string, string>, options: Options = {}) {
   const agents: Array<{ id: string; type: string; status: string; description: string }> = [];
   let lists = 0;
   const reads: string[] = [];
+  const registered: unknown[] = [];
+  const commands: unknown[] = [];
+  const sleeps: Array<{ ms: number; resolve: () => void; reject: (error: Error) => void }> = [];
+  let asleep = () => {};
   const under = (path: string) => Object.keys(files).filter((f) => f.startsWith(`${path}/`));
   const $ = {
     env: { get: async (name: string) => { if (options.failEnv) throw new Error('env unreadable'); return (options.env ?? { HOME })[name]; } },
     session: { root: async () => { if (options.failRoot) throw new Error('policy root unreadable'); return options.root ?? ROOT; }, id: async () => { if (options.failSessionId) throw new Error('session id unreadable'); return '5f0c2a'; } },
-    clock: { now: async () => { if (options.failClock) throw new Error('clock unreadable'); return 1791991231123; }, after: (_ms: number, fn: () => void) => { timers.push(fn); return { cancel: () => {} }; } },
-    process: { run: async (argv: readonly string[], init?: { timeoutMs?: number }) => options.runProcess ? options.runProcess(argv, init) : { exitCode: 0, stdout: '', stderr: '' } },
+    clock: { now: async () => { if (options.failClock) throw new Error('clock unreadable'); return 1791991231123; }, after: (_ms: number, fn: () => void) => { timers.push(fn); return { cancel: () => {} }; }, sleep: (ms: number) => new Promise<void>((resolve, reject) => { sleeps.push({ ms, resolve, reject }); asleep(); }) },
+    // `mv` is the operating system's step: the stand-in file system takes it.
+    process: { run: async (argv: readonly string[], init?: { timeoutMs?: number }) => {
+      if (options.runProcess) return options.runProcess(argv, init);
+      if (argv[0] === 'mv') { files[argv[3]!] = files[argv[2]!]!; delete files[argv[2]!]; }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    } },
     fs: {
+      write: async (path: string, text: string) => { files[path] = text; },
       exists: async (path: string) => path in files || under(path).length > 0,
       list: async (path: string) => {
         lists += 1;
@@ -75,7 +85,11 @@ function engine(files: Record<string, string>, options: Options = {}) {
       },
     },
     agent: { list: async () => { if (options.failAgentList) throw new Error('agent list unavailable'); return agents; } },
-    tool: { list: async () => TOOLS.map((name) => ({ name, description: '' })) },
+    tool: {
+      list: async () => TOOLS.map((name) => ({ name, description: '' })),
+      register: async (spec: { name: string }) => { if (options.failRegister) throw new Error('session not bound'); registered.push(spec); return { tool: `mcp__tool-visibility-controller__${spec.name}` }; },
+    },
+    command: { run: async (input: unknown) => { commands.push(input); if (options.failCommand) throw new Error('command.run: unknown command'); return { text: 'Reloaded: 3 plugins' }; } },
     ui: { log: (line: string, opts?: { to?: string }) => (opts?.to === 'debug' ? debugs : logs).push(line) },
   };
   (register as Hook)((name: string, matcherOrHook: Record<string, string> | Hook, fn?: Hook) => {
@@ -90,6 +104,21 @@ function engine(files: Record<string, string>, options: Options = {}) {
     fireTimers: () => timers.splice(0).forEach((fn) => fn()),
     lists: () => lists,
     reads: () => [...reads],
+    registered: () => [...registered],
+    commands: () => [...commands],
+    sleeping: () => sleeps.map((sleep) => sleep.ms),
+    // One period of the reload watch: ends its wait, and returns once it waits again.
+    tick: async () => {
+      const sleep = sleeps.shift();
+      if (sleep === undefined) throw new Error('the reload watch is not waiting');
+      const again = new Promise<void>((resolve) => { asleep = resolve; });
+      sleep.resolve();
+      await again;
+    },
+    cancelWatch: async () => {
+      sleeps.shift()!.reject(new Error('wait cancelled'));
+      await new Promise((resolve) => setImmediate(resolve));
+    },
     command: async (command: string, next: Hook = async () => ({})) => {
       const e = Object.freeze({ command, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } });
       return hooks.has('command.run') ? call('command.run', e, next) : next(e);
@@ -1064,4 +1093,170 @@ it('starts a new session without waiting for a prior log flush, then drains poli
   await run.endSession();
   expect(outcome).toBe('started');
   expect((await logRows(join(dir, 'tool-visibility-controller'), 'errors')).map((row) => row.event)).toEqual(['hook-threw', 'hook-threw']);
+});
+
+suite('reload', () => {
+  const T0 = 1800000000000;
+  const TOOL = 'mcp__tool-visibility-controller__reload_plugins';
+  const SIGNAL = `${HOME}/.local/state/tool-visibility-controller/reload.json`;
+  const SENT = 'Reload signal sent: every open chat running this plugin reloads its plugins, an idle chat within about 5 seconds, a working chat when its turn ends, this chat when this turn ends.';
+  const RELOAD = { command: 'reload-plugins' };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('registers the reload tool at session start and starts one watch, however many sessions start', async () => {
+    const run = engine({});
+    await run.startSession();
+    await run.startSession();
+    expect(run.registered()[0]).toEqual({
+      name: 'reload_plugins',
+      description:
+        'Reloads plugins in open chats — after a plugin\'s files changed: `all` (the default) signals every open chat on this machine that runs this plugin, this one included; `self` reloads this chat only. An idle chat reloads within seconds, a working chat when its turn ends, never mid-turn. Example: {"scope": "all"}. Returns one line saying who reloads; a failure starts `Nothing reloaded:` and names why. A chat that has not loaded this plugin is not reached.',
+      inputSchema: { type: 'object', properties: { scope: { type: 'string', enum: ['all', 'self'], description: 'Who reloads: `all` when left out.' } } },
+    });
+    expect(run.registered()).toHaveLength(2);
+    expect(run.sleeping()).toEqual([5000]);
+    expect(run.logs).toEqual([]);
+  });
+
+  it('a signal reloads the calling chat and every chat open before it once each, and no chat opened after it', async () => {
+    const files: Record<string, string> = {};
+    const caller = engine(files);
+    const other = engine(files);
+    await caller.startSession();
+    await other.startSession();
+    vi.setSystemTime(T0 + 1000);
+    expect(await caller.tool(TOOL)).toEqual({ result: SENT });
+    expect(files).toEqual({ [SIGNAL]: `{"at":${T0 + 1000},"by":"5f0c2a"}\n` });
+    vi.setSystemTime(T0 + 2000);
+    const late = engine(files);
+    await late.startSession();
+    for (const chat of [caller, other, late]) {
+      await chat.tick();
+      await chat.tick();
+    }
+    expect([caller.commands(), other.commands(), late.commands()]).toEqual([[RELOAD], [RELOAD], []]);
+    expect([...caller.logs, ...other.logs, ...late.logs]).toEqual([]);
+  });
+
+  it('reloads only the calling chat for the scope self, and writes no signal', async () => {
+    const files: Record<string, string> = {};
+    const caller = engine(files);
+    const other = engine(files);
+    await caller.startSession();
+    await other.startSession();
+    expect(await caller.tool(TOOL, { scope: 'self' })).toEqual({ result: 'This chat reloads its plugins when this turn ends.' });
+    for (const chat of [caller, other]) {
+      await chat.tick();
+      await chat.tick();
+    }
+    expect(files).toEqual({});
+    expect([caller.commands(), other.commands()]).toEqual([[RELOAD], []]);
+  });
+
+  it('counts a reload the person typed: a signal sent before it is answered, a later one reloads', async () => {
+    const files: Record<string, string> = {};
+    const caller = engine(files);
+    const other = engine(files);
+    await caller.startSession();
+    await other.startSession();
+    vi.setSystemTime(T0 + 1000);
+    await caller.tool(TOOL);
+    vi.setSystemTime(T0 + 2000);
+    await other.command('reload-plugins');
+    await other.tick();
+    expect(other.commands()).toEqual([]);
+    vi.setSystemTime(T0 + 3000);
+    await caller.tool(TOOL);
+    await other.tick();
+    expect(other.commands()).toEqual([RELOAD]);
+  });
+
+  it('refuses a scope it does not know, and a self reload without a running watch', async () => {
+    const files: Record<string, string> = {};
+    const run = engine(files);
+    await run.startSession();
+    expect(await run.tool(TOOL, { scope: 'others' })).toEqual({ result: 'Nothing reloaded: scope must be "all" or "self", got "others"' });
+    await run.cancelWatch();
+    expect(await run.tool(TOOL, { scope: 'self' })).toEqual({ result: "Nothing reloaded: this chat's reload watch is not running; type /reload-plugins" });
+    expect(run.sleeping()).toEqual([]);
+    expect(files).toEqual({});
+    await run.startSession();
+    expect(run.sleeping()).toEqual([5000]);
+  });
+
+  it('answers a failed signal write with its reason and sends nothing', async () => {
+    const homeless = engine({}, { env: {} });
+    await homeless.startSession();
+    expect(await homeless.tool(TOOL)).toEqual({ result: 'Nothing reloaded: HOME is not set, so the reload signal has no file' });
+    expect(homeless.logs).toContain('tool-visibility-controller: sending the reload signal failed: HOME is not set, so the reload signal has no file; no chat reloads');
+    const stuck = engine({}, { runProcess: async () => ({ exitCode: 1, stdout: '', stderr: 'mv: permission denied\n' }) });
+    await stuck.startSession();
+    expect(await stuck.tool(TOOL)).toEqual({ result: 'Nothing reloaded: moving the reload signal into place failed: mv: permission denied' });
+    expect(stuck.logs).toEqual(['tool-visibility-controller: sending the reload signal failed: moving the reload signal into place failed: mv: permission denied; no chat reloads']);
+  });
+
+  it('refuses the tool to a loop a visibility rule keeps it from', async () => {
+    const files: Record<string, string> = { [SCOPE]: '{"loops": {"main": {"mcp": {"exclude": ["tool-visibility-controller/reload_plugins"]}}}}' };
+    const run = engine(files);
+    run.sub('gp1', 'general-purpose');
+    await run.startSession();
+    vi.setSystemTime(T0 + 1000);
+    expect((await run.tool(TOOL)).deny).toContain(SCOPE);
+    expect(Object.keys(files)).toEqual([SCOPE]);
+    expect(await run.tool(TOOL, {}, 'gp1')).toEqual({ result: SENT });
+    expect(Object.keys(files)).toEqual([SCOPE, SIGNAL]);
+  });
+
+  it('reports a signal file it cannot read once per streak, and still answers the chat own ask', async () => {
+    const files: Record<string, string> = { [SIGNAL]: '{"at":' };
+    const run = engine(files);
+    await run.startSession();
+    await run.tool(TOOL, { scope: 'self' });
+    await run.tick();
+    await run.tick();
+    const unreadable = `tool-visibility-controller: the reload watch failed: ${SIGNAL} is not a reload signal: not JSON: Unexpected end of JSON input; this chat keeps the plugins it has loaded`;
+    // A second row of the streak would show here as the burst's count line.
+    run.fireTimers();
+    expect(run.commands()).toEqual([RELOAD]);
+    expect(run.logs).toEqual([unreadable]);
+    files[SIGNAL] = `{"at":${T0 + 1000}}\n`;
+    await run.tick();
+    expect(run.commands()).toEqual([RELOAD, RELOAD]);
+    files[SIGNAL] = '[]';
+    await run.tick();
+    expect(run.logs).toEqual([unreadable, `tool-visibility-controller: the reload watch failed: ${SIGNAL} is not a reload signal: not an object with a numeric "at"; this chat keeps the plugins it has loaded`]);
+  });
+
+  it('reports a reload Claude Code refuses once, and tries again only at the next signal', async () => {
+    const files: Record<string, string> = {};
+    const caller = engine(files);
+    const other = engine(files, { failCommand: true });
+    await caller.startSession();
+    await other.startSession();
+    vi.setSystemTime(T0 + 1000);
+    await caller.tool(TOOL);
+    await other.tick();
+    await other.tick();
+    expect(other.commands()).toEqual([RELOAD]);
+    expect(other.logs).toEqual(['tool-visibility-controller: the reload watch failed: command.run: unknown command; this chat keeps the plugins it has loaded']);
+    vi.setSystemTime(T0 + 2000);
+    await caller.tool(TOOL);
+    await other.tick();
+    expect(other.commands()).toEqual([RELOAD, RELOAD]);
+  });
+
+  it('starts the session and lets the call through when the tool cannot be registered', async () => {
+    const run = engine({}, { failRegister: true });
+    expect(await run.startSession()).toEqual({});
+    expect(run.logs).toEqual(['tool-visibility-controller: registering the reload_plugins tool failed: session not bound; this chat cannot ask for a reload, and still answers a signal']);
+    expect(await run.tool(TOOL)).toEqual(RAN);
+    expect(run.sleeping()).toEqual([5000]);
+  });
 });

@@ -146,6 +146,21 @@ A loop may see and invoke an item only when every rule agrees: the item's `visib
 - Definitions and scope files are read lazily on the first policy use and cached until `session.start` or `/reload-plugins`. After an edit, run `/reload-plugins` or start a new session; the next policy use reads the files again. Reload invalidates the cache after the command finishes, even if it throws, and preserves the command's result or error without rerunning or rewriting it. Other commands and events keep the cached policy; a failed policy load is retried on the next use.
 - A malformed block (a scalar where a list belongs, an unknown key, an unclosed list, a key given twice) is logged with its file and the reason, and only that block is ignored.
 
+### Reload plugins in every open chat
+
+After a plugin's files change, each open chat keeps the copy it loaded until `/reload-plugins` runs in it. The plugin registers one tool, `mcp__tool-visibility-controller__reload_plugins`, so one chat asks for all of them: tell any chat to reload the plugins in every chat, and the model calls it.
+
+| `scope` | Who reloads |
+| --- | --- |
+| `all` (the default) | every open chat of your user on this machine that runs this plugin, the calling chat included |
+| `self` | the calling chat only |
+
+- An idle chat reloads within about 5 seconds. A chat in the middle of a turn finishes the turn and reloads when it ends; a turn is never interrupted. The calling chat reloads when its own turn ends.
+- Nothing is typed into a chat: each chat runs its own `/reload-plugins`, shown in its transcript as a command the plugin ran.
+- The signal is one file, `$HOME/.local/state/tool-visibility-controller/reload.json`, holding when the reload was asked for and by which session. Each chat reads it every 5 seconds and reloads once when it is newer than the chat's last plugin load, so a chat opened after the signal, or one that reloaded since, does nothing. A `/reload-plugins` you type counts as that load.
+- The tool answers one line saying who reloads; a failure answers `Nothing reloaded:` and the reason, and sends nothing.
+- It is an MCP tool like any other: a `visibility` block or the scope file keeps it from a loop (`"mcp": { "exclude": ["tool-visibility-controller/reload_plugins"] }`).
+
 Remove it with:
 
 ```bash
@@ -177,7 +192,7 @@ Refuses the spawn of an agent type the calling loop may not use. Only an Agent t
 
 ### tool.call
 
-Refuses a built-in tool, an MCP tool, or a `Skill` call naming a skill or command the calling loop may not use.
+Refuses a built-in tool, an MCP tool, or a `Skill` call naming a skill or command the calling loop may not use. A call of the plugin's own `reload_plugins` tool that passes that check is answered here: `all` writes the reload signal file, `self` marks the chat's own reload. The reload never runs inside this hook, where Claude Code refuses a command that would wait on the turn the hook is holding.
 
 ### classic.SubagentStart / classic.SubagentStop
 
@@ -185,11 +200,11 @@ Learn each sub-agent's type by its id, for an id the session's agent list does n
 
 ### session.start
 
-Clears the cached policy and missing-definition path suppression, so the next policy use reads definitions and scope files again and may log a missing path again.
+Clears the cached policy and missing-definition path suppression, so the next policy use reads definitions and scope files again and may log a missing path again. Registers the `reload_plugins` tool and starts the chat's reload watch, once: every 5 seconds it reads the signal file and, when the signal is newer than the chat's last plugin load or the chat asked for its own reload, runs `/reload-plugins` through `$.command.run`, which Claude Code queues until the chat is idle. A signal is answered once: a reload Claude Code refuses is logged and not retried until the next signal. A signal file that cannot be read as one is an error once per failing streak.
 
 ### command.run
 
-Matches only `reload-plugins`. After `next(e)` finishes or throws, clears `cache.policy` and `cache.missing`, so the next policy use reads definitions and scope files again and may log a missing path again. It preserves the command's result or error, does not rerun or rewrite the command, and leaves other commands alone. This explicit reset is needed because reload sends `session.start` only to changed modules; an unchanged controller would otherwise keep its old policy.
+Matches only `reload-plugins`. After `next(e)` finishes or throws, clears `cache.policy` and `cache.missing`, so the next policy use reads definitions and scope files again and may log a missing path again. It preserves the command's result or error, does not rerun or rewrite the command, and leaves other commands alone. This explicit reset is needed because reload sends `session.start` only to changed modules; an unchanged controller would otherwise keep its old policy. Before `next(e)` it also records the moment as the chat's last plugin load, so a reload signal sent earlier is not answered a second time.
 
 ### session.end
 
@@ -220,11 +235,13 @@ The log writer is the plugin's own logging module (`src/plugin-log.ts`); it is p
 - A hidden skill's entry is removed up to the first blank line in its description; a description holding a blank line leaves its rest in the listing, since a skill entry marks no end of its own.
 - Plugin-provided agents, skills and commands are not read for `visibility`; rule them in the scope file.
 - Commands are read three subdirectories deep (`a:b:c:name`); each deeper directory holding a command file (looked for up to eight levels down) is logged as an error, and one that cannot be checked is logged too; its commands' `visibility` is not enforced.
+- The reload signal reaches a chat only once that chat runs a version of this plugin that has the `reload_plugins` tool: after installing or updating to it, each chat already open needs one last `/reload-plugins` typed in it, or a restart.
+- The reload signal reaches the chats of one user on one machine, those sharing one `$HOME`, and only chats that have this plugin enabled.
 - It is a convenience, not a security boundary: it fails open. Use `permissions.deny` for a tool that must never run.
 
 ## ❓ FAQ
 
-**Does it cost anything?** On the first policy use after `session.start` or `/reload-plugins`, one directory listing per definitions directory and one read per definition and scope file; subsequent uses reuse the cached policy. A failed load is retried on the next use. Per listing or call, one lookup in the session's agent list for a sub-agent's type, skipped when no rule speaks about that set. It makes no model call and no network request. Each nonempty plugin log flush runs one shell process per batch of at most 64 rows and appends to the level files described above.
+**Does it cost anything?** On the first policy use after `session.start` or `/reload-plugins`, one directory listing per definitions directory and one read per definition and scope file; subsequent uses reuse the cached policy. A failed load is retried on the next use. Per listing or call, one lookup in the session's agent list for a sub-agent's type, skipped when no rule speaks about that set. Each chat also reads the reload signal file, a few dozen bytes, every 5 seconds. It makes no model call and no network request. Each nonempty plugin log flush runs one shell process per batch of at most 64 rows and appends to the level files described above.
 
 **Why not `permissions.deny`?** It blocks a tool in every loop, the parent's included, and leaves the listing as it was. This plugin hides and refuses per caller.
 

@@ -23,6 +23,7 @@ import {
   type ScopeFile,
 } from '../src/policy.ts';
 import { directoryLocation, enabledPlugins, installedRoot, listedRoot, type PluginRef } from '../src/plugin-roots.ts';
+import { readSignal, RELOAD_ANSWERS, RELOAD_POLL_MS, RELOAD_TOOL, reloadScope, reloadSignalPath, ReloadWatch, signalText } from '../src/reload.ts';
 import { readDefinition, SETS, type SetName } from '../src/visibility.ts';
 
 // Thin adapter: every decision lives in src/. A failure is logged with its
@@ -42,7 +43,9 @@ type Pending = { level: PluginLogLevel; event: string; msg: string; hook: string
 /** `lost` counts rows dropped past the hold before the logger took them; `clockFailing` keeps the clock warning to one row per streak. */
 type LogState = { logger?: Promise<Logger>; work: Promise<void>; failing: boolean; clockFailing: boolean; pending: Pending[]; lost: number };
 /** One queue for the module's life: rows a failed final flush kept go out with the next session's first write. */
-type Cache = { policy?: Promise<Policy>; missing: Set<string>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; queue?: PluginLogQueue; burst: ScreenBurst; burstArmed: boolean };
+/** `tool`: the reload tool's full name once registered; `watching`: the signal watch runs; `failing` keeps a failing watch to one row per streak. */
+type Reload = { watch: ReloadWatch; tool?: string; watching: boolean; failing: boolean };
+type Cache = { policy?: Promise<Policy>; missing: Set<string>; types: AgentTypes; spawns: SpawnCalls; log: LogState; logDrain: Promise<void>; queue?: PluginLogQueue; burst: ScreenBurst; burstArmed: boolean; reload: Reload };
 type Entry = { name: string; kind: string; isLink?: boolean };
 type Read = { name: string; owned: Owned | null };
 
@@ -485,20 +488,111 @@ function callTargets(tool: string, skill: unknown): Array<[SetName, string]> {
   return targets;
 }
 
+// Registered at every session.start: a reload that changed this module starts it afresh.
+async function registerReloadTool($: EngineInterface, cache: Cache): Promise<void> {
+  try {
+    cache.reload.tool = (await $.tool.register(RELOAD_TOOL)).tool;
+  } catch (error) {
+    plog($, cache, 'error', 'reload-tool-unregistered', `tool-visibility-controller: registering the ${RELOAD_TOOL.name} tool failed: ${message(error)}; this chat cannot ask for a reload, and still answers a signal`, 'registerReloadTool', { error: message(error) });
+  }
+}
+
+async function reloadSignalFile($: EngineInterface): Promise<string | undefined> {
+  return reloadSignalPath(await $.env.get('HOME'), PLUGIN);
+}
+
+// The signal moves into place whole: a chat reading it mid-write would see half a file.
+async function sendReloadSignal($: EngineInterface): Promise<void> {
+  const path = await reloadSignalFile($);
+  if (path === undefined) throw new Error('HOME is not set, so the reload signal has no file');
+  let session: string | undefined;
+  try { session = await $.session.id(); } catch {
+    // The signal goes out unsigned.
+  }
+  const at = Date.now();
+  const draft = `${path}.${at}.tmp`;
+  await $.fs.write(draft, signalText(at, session));
+  const moved = await $.process.run(['mv', '-f', draft, path], { timeoutMs: 5000 });
+  if (moved.exitCode !== 0) throw new Error(`moving the reload signal into place failed: ${moved.stderr.trim() || `mv exit ${moved.exitCode}`}`);
+}
+
+// The tool's whole answer. The reload itself is never run from here: Claude Code refuses a command run
+// from a tool.call hook, which would wait on the turn the hook is holding. The watch runs it.
+async function answerReload($: EngineInterface, cache: Cache, input: unknown): Promise<{ result: string }> {
+  const scope = reloadScope(input);
+  if (typeof scope !== 'string') return { result: `Nothing reloaded: ${scope.problem}` };
+  if (scope === 'self') {
+    if (!cache.reload.watching) return { result: "Nothing reloaded: this chat's reload watch is not running; type /reload-plugins" };
+    cache.reload.watch.askSelf();
+  } else {
+    try {
+      await sendReloadSignal($);
+    } catch (error) {
+      plog($, cache, 'error', 'reload-signal-failed', `tool-visibility-controller: sending the reload signal failed: ${message(error)}; no chat reloads`, 'answerReload', { error: message(error) });
+      return { result: `Nothing reloaded: ${message(error)}` };
+    }
+  }
+  plog($, cache, 'info', 'reload-asked', `tool-visibility-controller: a plugin reload of ${scope === 'all' ? 'every open chat' : 'this chat'} was asked for`, 'answerReload', { scope });
+  return { result: RELOAD_ANSWERS[scope] };
+}
+
+// One look at the signal file. Claude Code queues the command and runs it once the chat is idle, so a working
+// turn is never interrupted; the wait for it is this watch's own. A due signal is taken before the command
+// runs: one that fails is reported, never retried every period.
+async function reloadTick($: EngineInterface, cache: Cache): Promise<void> {
+  const path = await reloadSignalFile($);
+  const signal = path !== undefined && (await $.fs.exists(path)) ? readSignal(await $.fs.read(path)) : undefined;
+  const at = signal !== undefined && 'at' in signal ? signal.at : undefined;
+  const cause = cache.reload.watch.take(at);
+  if (cause !== undefined) {
+    const { text } = await $.command.run({ command: 'reload-plugins' });
+    plog($, cache, 'info', 'plugins-reloaded', `tool-visibility-controller: reloaded this chat's plugins on ${cause === 'signal' ? 'the reload signal' : 'its own ask'}: ${text ?? 'no output'}`, 'reloadTick', cause === 'signal' ? { cause, signal } : { cause });
+  }
+  if (signal !== undefined && 'problem' in signal) throw new Error(`${path} is not a reload signal: ${signal.problem}`);
+}
+
+// Runs for the module's life, detached from every hook. A reload that changes this module cancels the wait
+// with the old environment, and the new module's session.start starts its own watch.
+async function watchReloads($: EngineInterface, cache: Cache): Promise<void> {
+  for (;;) {
+    try {
+      await $.clock.sleep(RELOAD_POLL_MS);
+    } catch (error) {
+      cache.reload.watching = false;
+      plog($, cache, 'debug', 'reload-watch-ended', `tool-visibility-controller: the reload watch ended: ${message(error)}`, 'watchReloads', { error: message(error) });
+      return;
+    }
+    try {
+      await reloadTick($, cache);
+      cache.reload.failing = false;
+    } catch (error) {
+      if (!cache.reload.failing) plog($, cache, 'error', 'reload-failed', `tool-visibility-controller: the reload watch failed: ${message(error)}; this chat keeps the plugins it has loaded`, 'watchReloads', { error: message(error) });
+      cache.reload.failing = true;
+    }
+  }
+}
+
 export const register: Register = (on: On) => {
-  const cache: Cache = { missing: new Set(), types: new AgentTypes(), spawns: new SpawnCalls(), log: newLog(), logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false };
+  const cache: Cache = { missing: new Set(), types: new AgentTypes(), spawns: new SpawnCalls(), log: newLog(), logDrain: Promise.resolve(), burst: new ScreenBurst(), burstArmed: false, reload: { watch: new ReloadWatch(Date.now()), watching: false, failing: false } };
 
   on('session.start', async ($, e, next) => {
     cache.policy = undefined;
     cache.missing.clear();
     cache.logDrain = Promise.all([cache.logDrain, finishLog($, cache, cache.log)]).then(() => {});
     cache.log = newLog();
+    await registerReloadTool($, cache);
+    if (!cache.reload.watching) {
+      cache.reload.watching = true;
+      void watchReloads($, cache);
+    }
     return next(e);
   });
 
   // Unchanged modules get no session.start on reload. Invalidate after core finishes,
   // even if it fails: a partial reload may already have changed the definitions.
   on('command.run', { command: 'reload-plugins' }, async ($, e, next) => {
+    // Every reload answers the signals sent before it, whoever asked for it.
+    cache.reload.watch.loaded(Date.now());
     try {
       return await next(e);
     } finally {
@@ -560,7 +654,8 @@ export const register: Register = (on: On) => {
     if (e.tool === 'Skill' && targets.length === 1) plog($, cache, 'warning', 'skill-unnamed', skillUnnamedText(skill, e.agentId ?? MAIN), 'tool.call', { agentId: e.agentId });
     const deny = await checkCall($, cache, targets, e.agentId);
     if (deny !== undefined) plog($, cache, 'info', 'denied', deny, 'tool.call');
-    return deny === undefined ? next(e) : { deny };
+    if (deny !== undefined) return { deny };
+    return e.tool === cache.reload.tool ? answerReload($, cache, (e as { scope?: unknown }).scope) : next(e);
   }).catch(($, e, next) => {
     plog($, cache, 'error', 'hook-threw', hookFailureText('tool.call', next.error, `tool ${e.tool}, loop ${e.agentId ?? MAIN}`), 'tool.call', { kind: next.error.kind, error: next.error.message });
     return next(e);
