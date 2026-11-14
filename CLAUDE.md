@@ -8,8 +8,8 @@ its listings and may invoke. `README.md` is the behavioural spec.
 ## Layout
 
 - `plugins/tool-visibility-controller/`: everything that installs, and nothing else — the directory scans only this folder, so dev files never go in it.
-- `plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts`: the adapter, the only file that touches `$`: it reads the definitions and scope files, resolves a loop's agent type, and wires `prompt.attachment`, `agent.spawn` and `tool.call` to `src/`.
-- `plugins/tool-visibility-controller/src/`: every decision, pure and unit-tested — `visibility.ts` reads the frontmatter field, `policy.ts` matches names and decides who may use what, `listings.ts` rewrites the listings; `tests/` holds one vitest file per concern.
+- `plugins/tool-visibility-controller/hooks/tool-visibility-controller.ts`: the adapter, the only file that touches `$`: it reads the definitions, the scope files and the Claude plugin records, resolves a loop's agent type, and wires `prompt.attachment`, `agent.spawn` and `tool.call` to `src/`.
+- `plugins/tool-visibility-controller/src/`: every decision, pure and unit-tested — `visibility.ts` reads the frontmatter field, `policy.ts` matches names and decides who may use what, `listings.ts` rewrites the listings, `plugin-roots.ts` turns the Claude plugin records into each enabled plugin's root; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
 - `plugins/tool-visibility-controller/.claude-plugin/`: `plugin.json` (the manifest) and `icon.svg`; the plugin installs as `tool-visibility-controller@professor`.
 
@@ -37,5 +37,5 @@ its listings and may invoke. `README.md` is the behavioural spec.
   3. Open the `develop → main` pull request. Its `ci.yml` runs the same make targets, `check` on Linux and macOS and `release`, and its `ci` job passes only when every one succeeded; `release` requires the version to have moved past `main`'s and the CHANGELOG section to yield notes.
   4. Merge once `ci` is green. The merge is the release: `publish.yml`'s `publish` job tags the merge commit `tool-visibility-controller--vX.Y.Z` and publishes the GitHub release from the CHANGELOG section. No tag is pushed by hand.
 - Semantic versioning: a fix is a patch; a new option or behaviour is a minor; a renamed or removed option is a major, and its CHANGELOG entry says how to migrate.
-- Publishing: README and marketing changes on `develop` are pushed as soon as they are committed. Code is pushed, and a release is cut, only when the owner asks.
+- Publishing: code is pushed, and a release is cut, only when the owner asks.
 - Git writes go through this repo's gitter, `.claude/agents/gitter.md`.
