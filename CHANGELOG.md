@@ -4,6 +4,8 @@ Every release of tool-visibility-controller. Versions follow [semantic versionin
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-14
+
 ### Added
 
 - **One chat reloads the plugins of every open chat.** The plugin registers the tool `mcp__tool-visibility-controller__reload_plugins`: with `scope` `all` (the default) every open chat of the user on the machine that runs this plugin reloads its plugins, the calling chat included; with `self` only the calling chat does. An idle chat reloads within about 5 seconds and a working chat when its turn ends, never mid-turn, and nothing is typed into any chat: each runs its own `/reload-plugins` on a signal file, `$HOME/.local/state/tool-visibility-controller/reload.json`, that every chat reads every 5 seconds. A chat already open when this version is installed needs one last `/reload-plugins` typed in it before it answers the signal. The README's Usage section says how it works and the Limits what it does not reach.
